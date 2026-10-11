@@ -65,7 +65,7 @@ jobs:
           WORKFLOW: ${{ github.workflow }}
         run: |
           {
-            echo "package=${REPOSITORY,,}"
+            echo "package=$(tr "[:upper:]" "[:lower:]" <<< "$REPOSITORY")"
             echo "year=$(date +%Y)"
             if [[ -n "$VERSION" ]]; then
               echo "name=${REPOSITORY}_v${VERSION}_$OS"

@@ -67,7 +67,6 @@ jobs:
           REPOSITORY: ${{ github.event.repository.name }}
           VERSION: ${{ inputs.version }}
           OS: ${{ matrix.osname }}
-          WORKFLOW: ${{ github.workflow }}
         run: |
           {
             echo "package=$(tr "[:upper:]" "[:lower:]" <<< "$REPOSITORY")"
@@ -78,8 +77,8 @@ jobs:
               echo "description=$REPOSITORY for $OS (version $VERSION)"
             else
               echo "name=${REPOSITORY}_${OS}_Debug"
-              echo "product=$REPOSITORY ($WORKFLOW - $GITHUB_SHA)"
-              echo "description=$WORKFLOW of $REPOSITORY for $OS (commit $GITHUB_SHA)"
+              echo "product=$REPOSITORY (Debug build - $GITHUB_SHA)"
+              echo "description=Debug build of $REPOSITORY for $OS (commit $GITHUB_SHA)"
             fi
           } >> "$GITHUB_OUTPUT"
 

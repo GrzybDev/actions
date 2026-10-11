@@ -83,10 +83,29 @@ jobs:
             fi
           } >> "$GITHUB_OUTPUT"
 
+      # Only for debug builds: a release builds from scratch, as setup-uv does with its own cache, so that no cached
+      # object can find its way into it.
+      - name: Install ccache
+        if: ${{ inputs.builder == 'nuitka' && !inputs.version && runner.os != 'Windows' }}
+        shell: bash
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then sudo apt-get install -y ccache; else brew install ccache; fi
+
+      - name: Restore the Nuitka cache
+        if: ${{ inputs.builder == 'nuitka' && !inputs.version }}
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/nuitka
+          key: nuitka-${{ runner.os }}-${{ runner.arch }}-${{ steps.python.outputs.python-version }}-${{ github.sha }}
+          restore-keys: nuitka-${{ runner.os }}-${{ runner.arch }}-${{ steps.python.outputs.python-version }}-
+
       - name: Build with Nuitka
         if: ${{ inputs.builder == 'nuitka' }}
         shell: bash
         env:
+          NUITKA_CACHE_DIR: ${{ runner.temp }}/nuitka
           MODE: ${{ inputs.version && 'onefile' || 'standalone' }}
           PACKAGE: ${{ steps.app.outputs.package }}
           FILENAME: ${{ steps.app.outputs.name }}${{ matrix.extension }}

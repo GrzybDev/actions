@@ -1,0 +1,72 @@
+name: Python checks
+
+on:
+  workflow_call:
+    inputs:
+      test-command:
+        description: The command that runs the tests in the locked environment.
+        type: string
+        default: python -m unittest discover -s tests -v
+      mypy:
+        description: Also check the types with mypy, as the project configures it.
+        type: boolean
+        default: false
+      apt-packages:
+        description: System packages that the tests need, such as ffmpeg, separated by spaces.
+        type: string
+        default: ''
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          python-version: '3.14'
+
+      - name: Check the code
+        run: uv run --locked ruff check
+
+      - name: Check the formatting
+        run: uv run --locked ruff format --check
+
+      - name: Check the types
+        if: ${{ inputs.mypy }}
+        run: uv run --locked mypy
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          python-version: '3.14'
+
+      - name: Install system packages
+        if: ${{ inputs.apt-packages }}
+        env:
+          PACKAGES: ${{ inputs.apt-packages }}
+        run: |
+          read -ra packages <<< "$PACKAGES"
+          sudo apt-get update
+          sudo apt-get install -y "${packages[@]}"
+
+      - name: Run the tests
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: |
+          read -ra command <<< "$TEST_COMMAND"
+          uv run --locked "${command[@]}"
+
+      - name: Check the command line entry points
+        env:
+          REPOSITORY: ${{ github.event.repository.name }}
+        run: |
+          package=$(tr "[:upper:]" "[:lower:]" <<< "$REPOSITORY")
+          uv run --locked "$package" --help
+          uv run --locked python -m "$package" --help

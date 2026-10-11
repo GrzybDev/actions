@@ -86,6 +86,25 @@ jobs:
       include-package: rich._unicode_data
 ```
 
+## Python checks
+
+A reusable workflow lints a Python app with Ruff (and mypy, given `mypy: true`), runs its tests and calls its command
+line entry points, `<lowercase repository name> --help` and `python -m <lowercase repository name> --help`, on the
+dependencies that its `uv.lock` pins. Run builds after it, so that nothing is built from code that fails them:
+
+```yaml
+jobs:
+  checks:
+    uses: GrzybDev/actions/.github/workflows/python-checks.yml@v1
+    with:
+      test-command: pytest
+      apt-packages: ffmpeg
+
+  build:
+    needs: checks
+    uses: GrzybDev/actions/.github/workflows/python-app.yml@v1
+```
+
 ## Development
 
 The signing scripts have Pester 5 tests, which CI runs as well:

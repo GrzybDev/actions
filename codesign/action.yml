@@ -1,0 +1,66 @@
+name: Code signing
+description: >
+  Has Windows files code-signed by the machine that holds the certificate, through a signing store that
+  sign-pending.ps1 watches there, and replaces them with their signed copies.
+
+inputs:
+  files:
+    description: >
+      The files to sign now, one per line. Without them the action only sets up its command output, for a tool that
+      signs as it packages, such as vpk's --signTemplate.
+    default: ''
+  version:
+    description: The version being released.
+    required: true
+  app:
+    description: The app being released, for a repository that releases several.
+    default: ${{ github.event.repository.name }}
+  store:
+    description: >
+      The signing store: s3://<bucket>[/<prefix>], reached through the AWS CLI with the AWS_* environment of the steps
+      that sign, or a folder.
+    default: s3://codesign
+  subject:
+    description: The subject that the signing certificate must have; empty takes any trusted certificate.
+    default: ''
+  timeout-minutes:
+    description: >
+      How long to wait for the signatures. The job must end within 150 minutes, after which sign-pending.ps1 removes a
+      file instead of signing it.
+    default: '60'
+
+outputs:
+  command:
+    description: >
+      The command that signs the files given after it in place, for later steps of the job, which need the store's
+      AWS_* environment.
+    value: ${{ steps.setup.outputs.command }}
+
+runs:
+  using: composite
+  steps:
+    - id: setup
+      shell: pwsh
+      env:
+        STORE: ${{ inputs.store }}
+        REPOSITORY: ${{ github.event.repository.name }}
+        APP: ${{ inputs.app }}
+        VERSION: ${{ inputs.version }}
+        SUBJECT: ${{ inputs.subject }}
+        TIMEOUT: ${{ inputs.timeout-minutes }}
+      run: |
+        @(
+          "SIGNING_STORE=$env:STORE", "SIGNING_REPOSITORY=$env:REPOSITORY", "SIGNING_APP=$env:APP",
+          "SIGNING_VERSION=$env:VERSION", "SIGNING_SUBJECT=$env:SUBJECT", "SIGNING_TIMEOUT_MINUTES=$env:TIMEOUT"
+        ) | Add-Content -LiteralPath $env:GITHUB_ENV
+        "command=pwsh -NoProfile -File `"$env:GITHUB_ACTION_PATH\sign-remote.ps1`"" |
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT
+        Write-Host "::notice title=Waiting for signatures::Sign the files on the signing machine with codesign\sign-pending.ps1 -Watch -Store $env:STORE"
+
+    - if: inputs.files != ''
+      shell: pwsh
+      env:
+        FILES: ${{ inputs.files }}
+      run: |
+        $files = @($env:FILES -split '\r?\n' | Where-Object { $_.Trim() })
+        & "$env:GITHUB_ACTION_PATH\sign-remote.ps1" @files

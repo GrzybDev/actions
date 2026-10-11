@@ -1,0 +1,29 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  workflows:
+    name: Workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the workflows
+        uses: docker://rhysd/actionlint:1.7.12
+
+  codesign:
+    name: Code signing
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Test the signing scripts
+        shell: pwsh
+        run: Invoke-Pester -Path codesign/tests -CI

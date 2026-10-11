@@ -1,0 +1,62 @@
+name: Bump version
+description: >
+  Raises the version with bump-my-version, or sets the version that a release names, and commits it with a refreshed
+  uv.lock as the github-actions bot; a raised version is tagged v<version>.
+
+inputs:
+  bump:
+    description: rebuild (keeps the version), patch, minor or major.
+    default: rebuild
+  version:
+    description: An exact version instead, such as the tag of a published release; a leading v is dropped.
+    default: ''
+
+outputs:
+  version:
+    description: The version to build.
+    value: ${{ steps.bump.outputs.version }}
+  ref:
+    description: The commit to build, or empty to build the commit that is checked out.
+    value: ${{ steps.bump.outputs.ref }}
+
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@v10.3.0
+
+    - id: bump
+      shell: bash
+      env:
+        BUMP: ${{ inputs.bump }}
+        VERSION: ${{ inputs.version }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        previous=$(uvx bump-my-version show current_version)
+        if [[ -n "$VERSION" && "${VERSION#v}" != "$previous" ]]; then
+          uvx bump-my-version bump --no-commit --no-tag --new-version "${VERSION#v}"
+        elif [[ -z "$VERSION" && "${BUMP:-rebuild}" != rebuild ]]; then
+          uvx bump-my-version bump --no-commit --no-tag "$BUMP"
+        fi
+        version=$(uvx bump-my-version show current_version)
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        if [[ "$version" == "$previous" ]]; then
+          exit 0
+        fi
+
+        if [[ -f uv.lock ]]; then uv lock; fi
+        # GITHUB_TOKEN acts as this account, and its id makes the address that GitHub links to it.
+        bot="github-actions[bot]"
+        id=$(gh api "users/$bot" --jq .id)
+        git config user.name "$bot"
+        git config user.email "$id+$bot@users.noreply.github.com"
+        git commit --all --message "Bump version: $previous → $version"
+        if [[ -n "$VERSION" ]]; then
+          # A release already has its tag, so the commit of its version only goes to the default branch, which refuses
+          # it if it moved past the release.
+          git push origin "HEAD:refs/heads/$DEFAULT_BRANCH"
+        else
+          git tag "v$version"
+          git push --atomic origin "HEAD:$GITHUB_REF" "refs/tags/v$version"
+        fi
+        echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"

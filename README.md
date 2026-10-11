@@ -45,6 +45,26 @@ PowerShell 5.1 or PowerShell 7, the AWS CLI with the store's credentials and end
 CLI profile), the card inserted with its certificate registered by proCertum CardManager, and `signtool` from Visual
 Studio or the Windows SDK. `Get-Help codesign\sign-pending.ps1 -Detailed` lists the other parameters.
 
+## bump-version
+
+Raises the version with [bump-my-version](https://callowayproject.github.io/bump-my-version/) (`patch`, `minor`
+or `major`), or sets the exact version that a published release names, and commits it together with a refreshed
+`uv.lock`, when the project has one, as the github-actions bot. A raised version is tagged
+`v<version>`; a release keeps its own tag, and the commit of its version goes to the default branch, which refuses it
+if it moved past the release. `rebuild` keeps the version and builds the commit that is checked out. The job needs
+`contents: write`.
+
+```yaml
+- uses: actions/checkout@v7
+- id: bump
+  uses: GrzybDev/actions/bump-version@v1
+  with:
+    bump: ${{ inputs.version_type }}
+    version: ${{ github.event_name == 'release' && github.ref_name || '' }}
+```
+
+Its outputs are the `version` to build and the `ref` (a commit) to build from.
+
 ## Development
 
 The signing scripts have Pester 5 tests, which CI runs as well:

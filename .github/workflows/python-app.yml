@@ -48,12 +48,17 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
-      - uses: actions/setup-python@v7
+      - id: python
+        uses: actions/setup-python@v7
         with:
           python-version: '3.14'
 
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          python-version: ${{ steps.python.outputs.python-path }}
+
       - name: Install the app
-        run: pip install . ${{ inputs.builder == 'pyinstaller' && 'pyinstaller' || '' }}
+        run: uv sync --locked --no-dev
 
       - id: app
         name: Name the build
@@ -80,19 +85,23 @@ jobs:
 
       - name: Build with Nuitka
         if: ${{ inputs.builder == 'nuitka' }}
-        uses: Nuitka/Nuitka-Action@v1.4
-        with:
-          mode: ${{ inputs.version && 'onefile' || 'standalone' }}
-          script-name: src/${{ steps.app.outputs.package }}
-          output-dir: build
-          output-file: ${{ steps.app.outputs.name }}
-          company-name: ${{ github.repository_owner }}
-          product-name: ${{ steps.app.outputs.product }}
-          file-description: ${{ steps.app.outputs.description }}
-          file-version: ${{ inputs.version || '0.0.0.0' }}
-          product-version: ${{ inputs.version || '0.0.0.0' }}
-          copyright: Copyright (c) ${{ steps.app.outputs.year }} ${{ github.repository_owner }}
-          include-package: ${{ inputs.include-package }}
+        shell: bash
+        env:
+          MODE: ${{ inputs.version && 'onefile' || 'standalone' }}
+          PACKAGE: ${{ steps.app.outputs.package }}
+          FILENAME: ${{ steps.app.outputs.name }}${{ matrix.extension }}
+          OWNER: ${{ github.repository_owner }}
+          PRODUCT: ${{ steps.app.outputs.product }}
+          DESCRIPTION: ${{ steps.app.outputs.description }}
+          VERSION: ${{ inputs.version || '0.0.0.0' }}
+          YEAR: ${{ steps.app.outputs.year }}
+          INCLUDE_PACKAGE: ${{ inputs.include-package }}
+        run: |
+          options=(--"$MODE" --assume-yes-for-downloads --output-dir=build --output-filename="$FILENAME")
+          options+=(--company-name="$OWNER" --product-name="$PRODUCT" --file-description="$DESCRIPTION")
+          options+=(--file-version="$VERSION" --product-version="$VERSION" --copyright="Copyright (c) $YEAR $OWNER")
+          if [[ -n "$INCLUDE_PACKAGE" ]]; then options+=(--include-package="$INCLUDE_PACKAGE"); fi
+          uv run --locked --no-dev --with nuitka python -m nuitka "${options[@]}" "src/$PACKAGE"
 
       # PyInstaller takes the version resource of a Windows executable as a Python expression in a file.
       - name: Describe the Windows executable
@@ -144,7 +153,7 @@ jobs:
           if [[ -n "$COPY_METADATA" ]]; then options+=(--copy-metadata "$COPY_METADATA"); fi
           if [[ -f version_info.txt ]]; then options+=(--version-file version_info.txt); fi
           if [[ "$RUNNER_OS" == macOS ]]; then options+=(--osx-bundle-identifier "com.$OWNER.$PACKAGE"); fi
-          pyinstaller "${options[@]}" "src/$PACKAGE/__main__.py"
+          uv run --locked --no-dev --with pyinstaller pyinstaller "${options[@]}" "src/$PACKAGE/__main__.py"
 
       - name: Keep the debug build
         if: ${{ !inputs.version }}

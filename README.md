@@ -68,8 +68,8 @@ Its outputs are the `version` to build and the `ref` (a commit) to build from.
 ## Python app builds
 
 A reusable workflow builds a Python app whose package is `src/<lowercase repository name>` on Linux, macOS and
-Windows, with Nuitka or, given `builder: pyinstaller`, with PyInstaller. Without a `version` it keeps debug builds as
-artifacts; with one it builds onefile executables, signs the Windows one with `codesign` and attaches them to the
+Windows, with Nuitka or, given `builder: pyinstaller`, with PyInstaller, from the dependencies that its `uv.lock`
+pins. Without a `version` it keeps debug builds as artifacts; with one it builds onefile executables, signs the Windows one with `codesign` and attaches them to the
 release `v<version>`.
 
 ```yaml

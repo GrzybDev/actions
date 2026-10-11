@@ -1,0 +1,176 @@
+name: Python app build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: >
+          The version to release: builds onefile executables, signs the Windows one and attaches them to the release
+          v<version>. Without it, debug builds become artifacts.
+        type: string
+        default: ''
+      ref:
+        description: The ref to build, such as the commit that bump-version gives; the triggering commit when empty.
+        type: string
+        default: ''
+      builder:
+        description: nuitka, or pyinstaller for an app that Nuitka does not build well.
+        type: string
+        default: nuitka
+      include-package:
+        description: For Nuitka, a package that it must include although no import shows it, such as rich._unicode_data.
+        type: string
+        default: ''
+      copy-metadata:
+        description: For PyInstaller, a package whose metadata the app reads at run time, such as readchar.
+        type: string
+        default: ''
+
+jobs:
+  build:
+    name: Build for ${{ matrix.osname }}
+    runs-on: ${{ matrix.os }}
+    # The signing machine never signs a file uploaded longer ago, so the two change together.
+    timeout-minutes: 150
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            osname: Linux
+          - os: macos-latest
+            osname: macOS
+          - os: windows-latest
+            osname: Windows
+            extension: .exe
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+
+      - name: Install the app
+        run: pip install . ${{ inputs.builder == 'pyinstaller' && 'pyinstaller' || '' }}
+
+      - id: app
+        name: Name the build
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.event.repository.name }}
+          VERSION: ${{ inputs.version }}
+          OS: ${{ matrix.osname }}
+          WORKFLOW: ${{ github.workflow }}
+        run: |
+          {
+            echo "package=${REPOSITORY,,}"
+            echo "year=$(date +%Y)"
+            if [[ -n "$VERSION" ]]; then
+              echo "name=${REPOSITORY}_v${VERSION}_$OS"
+              echo "product=$REPOSITORY"
+              echo "description=$REPOSITORY for $OS (version $VERSION)"
+            else
+              echo "name=${REPOSITORY}_${OS}_Debug"
+              echo "product=$REPOSITORY ($WORKFLOW - $GITHUB_SHA)"
+              echo "description=$WORKFLOW of $REPOSITORY for $OS (commit $GITHUB_SHA)"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build with Nuitka
+        if: ${{ inputs.builder == 'nuitka' }}
+        uses: Nuitka/Nuitka-Action@v1.4
+        with:
+          mode: ${{ inputs.version && 'onefile' || 'standalone' }}
+          script-name: src/${{ steps.app.outputs.package }}
+          output-dir: build
+          output-file: ${{ steps.app.outputs.name }}
+          company-name: ${{ github.repository_owner }}
+          product-name: ${{ steps.app.outputs.product }}
+          file-description: ${{ steps.app.outputs.description }}
+          file-version: ${{ inputs.version || '0.0.0.0' }}
+          product-version: ${{ inputs.version || '0.0.0.0' }}
+          copyright: Copyright (c) ${{ steps.app.outputs.year }} ${{ github.repository_owner }}
+          include-package: ${{ inputs.include-package }}
+
+      # PyInstaller takes the version resource of a Windows executable as a Python expression in a file.
+      - name: Describe the Windows executable
+        if: ${{ inputs.builder == 'pyinstaller' && runner.os == 'Windows' }}
+        shell: python
+        env:
+          VERSION: ${{ inputs.version }}
+          OWNER: ${{ github.repository_owner }}
+          REPOSITORY: ${{ github.event.repository.name }}
+          NAME: ${{ steps.app.outputs.name }}
+          PRODUCT: ${{ steps.app.outputs.product }}
+          DESCRIPTION: ${{ steps.app.outputs.description }}
+          YEAR: ${{ steps.app.outputs.year }}
+        run: |
+          import os
+          from pathlib import Path
+
+          numbers = (*map(int, (os.environ["VERSION"] or "0").split(".")), 0, 0, 0, 0)[:4]
+          version = ".".join(map(str, numbers))
+          strings = {
+              "CompanyName": os.environ["OWNER"],
+              "FileDescription": os.environ["DESCRIPTION"],
+              "FileVersion": version,
+              "InternalName": os.environ["REPOSITORY"],
+              "LegalCopyright": f"Copyright (c) {os.environ['YEAR']} {os.environ['OWNER']}",
+              "OriginalFilename": f"{os.environ['NAME']}.exe",
+              "ProductName": os.environ["PRODUCT"],
+              "ProductVersion": version,
+          }
+          structs = ", ".join(f"StringStruct({key!r}, {value!r})" for key, value in strings.items())
+          Path("version_info.txt").write_text(
+              f"VSVersionInfo(ffi=FixedFileInfo(filevers={numbers}, prodvers={numbers}), kids=["
+              f"StringFileInfo([StringTable('040904B0', [{structs}])]), "
+              "VarFileInfo([VarStruct('Translation', [1033, 1200])])])\n",
+              encoding="utf-8",
+          )
+
+      - name: Build with PyInstaller
+        if: ${{ inputs.builder == 'pyinstaller' }}
+        shell: bash
+        env:
+          PACKAGE: ${{ steps.app.outputs.package }}
+          NAME: ${{ steps.app.outputs.name }}
+          DIST: ${{ inputs.version && 'build' || format('build/{0}.dist', steps.app.outputs.package) }}
+          COPY_METADATA: ${{ inputs.copy-metadata }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          options=(--noconfirm --onefile --icon NONE --name "$NAME" --distpath "$DIST")
+          if [[ -n "$COPY_METADATA" ]]; then options+=(--copy-metadata "$COPY_METADATA"); fi
+          if [[ -f version_info.txt ]]; then options+=(--version-file version_info.txt); fi
+          if [[ "$RUNNER_OS" == macOS ]]; then options+=(--osx-bundle-identifier "com.$OWNER.$PACKAGE"); fi
+          pyinstaller "${options[@]}" "src/$PACKAGE/__main__.py"
+
+      - name: Keep the debug build
+        if: ${{ !inputs.version }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: Debug_${{ matrix.osname }}
+          path: build/${{ steps.app.outputs.package }}.dist
+          include-hidden-files: true
+
+      - name: Sign the executable
+        if: ${{ inputs.version && runner.os == 'Windows' }}
+        uses: GrzybDev/actions/codesign@v1
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+          AWS_ENDPOINT_URL: ${{ secrets.AWS_ENDPOINT_URL }}
+        with:
+          files: build/${{ steps.app.outputs.name }}${{ matrix.extension }}
+          version: ${{ inputs.version }}
+          store: ${{ vars.SIGNING_STORE || 's3://codesign' }}
+          subject: ${{ vars.SIGNING_SUBJECT }}
+
+      - name: Attach the executable to the release
+        if: ${{ inputs.version }}
+        uses: softprops/action-gh-release@v3
+        with:
+          files: build/${{ steps.app.outputs.name }}${{ matrix.extension }}
+          tag_name: v${{ inputs.version }}

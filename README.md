@@ -65,6 +65,27 @@ if it moved past the release. `rebuild` keeps the version and builds the commit 
 
 Its outputs are the `version` to build and the `ref` (a commit) to build from.
 
+## Python app builds
+
+A reusable workflow builds a Python app whose package is `src/<lowercase repository name>` on Linux, macOS and
+Windows, with Nuitka or, given `builder: pyinstaller`, with PyInstaller. Without a `version` it keeps debug builds as
+artifacts; with one it builds onefile executables, signs the Windows one with `codesign` and attaches them to the
+release `v<version>`.
+
+```yaml
+jobs:
+  build:
+    needs: version
+    permissions:
+      contents: write
+    uses: GrzybDev/actions/.github/workflows/python-app.yml@v1
+    secrets: inherit
+    with:
+      version: ${{ needs.version.outputs.version }}
+      ref: ${{ needs.version.outputs.ref }}
+      include-package: rich._unicode_data
+```
+
 ## Development
 
 The signing scripts have Pester 5 tests, which CI runs as well:

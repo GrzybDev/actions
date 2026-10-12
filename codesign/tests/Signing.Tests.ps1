@@ -104,6 +104,14 @@ Describe 'Signing through a store' {
         $signer = Start-Script 'sign-pending.ps1' @('-Watch', '-Store', "`"$store`"", '-CertificateThumbprint',
             $certificate.Thumbprint, '-TimestampUrl', '""', '-IntervalSeconds', '1', '-SettleSeconds', '1', '-AllowUntrustedRoot')
         try {
+            # Finding signtool can take most of a minute on a runner, which would count against the release's timeout.
+            $deadline = [DateTime]::UtcNow.AddMinutes(3)
+            while (-not (Select-String -LiteralPath $signer.Log -Pattern '^Watching ' -Quiet)) {
+                if ($signer.Process.HasExited -or [DateTime]::UtcNow -gt $deadline) {
+                    throw "sign-pending.ps1 never started watching: $(Get-Content $signer.Log, "$($signer.Log).err" -Raw)"
+                }
+                Start-Sleep -Milliseconds 200
+            }
             $result = Wait-Script (Start-SignRemote $first, $second)
             $againResult = Wait-Script (Start-SignRemote $again)
         }

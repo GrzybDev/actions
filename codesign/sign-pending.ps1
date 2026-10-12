@@ -56,11 +56,8 @@ function Find-SignTool {
         return $SignToolPath
     }
     $architecture = if ([Environment]::Is64BitOperatingSystem) { 'x64' } else { 'x86' }
-    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-    if (Test-Path $vswhere) {
-        $found = & $vswhere -latest -products * -find "**\$architecture\signtool.exe" | Select-Object -First 1
-        if ($found) { return $found }
-    }
+    # The Windows SDK is where signtool usually is, so it is looked in first: vswhere's search goes through all of
+    # Visual Studio, which is slow where many workloads are installed.
     foreach ($key in 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots',
         'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows Kits\Installed Roots') {
         $kits = Get-ItemProperty $key -Name KitsRoot10 -ErrorAction SilentlyContinue
@@ -69,6 +66,11 @@ function Find-SignTool {
             Where-Object { $_.Name -as [version] } | Sort-Object { [version]$_.Name } -Descending |
             ForEach-Object { Join-Path $_.FullName "$architecture\signtool.exe" } | Where-Object { Test-Path $_ } |
             Select-Object -First 1
+        if ($found) { return $found }
+    }
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (Test-Path $vswhere) {
+        $found = & $vswhere -latest -products * -find "**\$architecture\signtool.exe" | Select-Object -First 1
         if ($found) { return $found }
     }
     throw 'signtool.exe was not found: install the Windows SDK with its signing tools, or pass -SignToolPath.'

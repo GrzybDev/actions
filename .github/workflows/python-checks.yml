@@ -12,9 +12,13 @@ on:
         type: boolean
         default: false
       apt-packages:
-        description: System packages that the tests need, such as ffmpeg, separated by spaces.
+        description: System packages that the tests need on Linux runners, such as ffmpeg, separated by spaces.
         type: string
         default: ''
+      runners:
+        description: The runners to test on, as a JSON list such as ["ubuntu-latest", "windows-latest"].
+        type: string
+        default: '["ubuntu-latest"]'
 
 jobs:
   lint:
@@ -38,8 +42,14 @@ jobs:
         run: uv run --locked mypy
 
   test:
-    name: Test
-    runs-on: ubuntu-latest
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: ${{ fromJSON(inputs.runners) }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7
 
@@ -48,7 +58,7 @@ jobs:
           python-version: '3.14'
 
       - name: Install system packages
-        if: ${{ inputs.apt-packages }}
+        if: ${{ inputs.apt-packages && runner.os == 'Linux' }}
         env:
           PACKAGES: ${{ inputs.apt-packages }}
         run: |

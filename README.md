@@ -90,7 +90,8 @@ jobs:
 
 A reusable workflow lints a Python app with Ruff (and mypy, given `mypy: true`), runs its tests and calls its command
 line entry points, `<lowercase repository name> --help` and `python -m <lowercase repository name> --help`, on the
-dependencies that its `uv.lock` pins. Run builds after it, so that nothing is built from code that fails them:
+dependencies that its `uv.lock` pins. The tests run on Ubuntu unless `runners` lists other runners; `apt-packages` are
+installed on the Linux ones. Run builds after it, so that nothing is built from code that fails them:
 
 ```yaml
 jobs:
@@ -99,6 +100,7 @@ jobs:
     with:
       test-command: pytest
       apt-packages: ffmpeg
+      runners: '["ubuntu-latest", "windows-latest"]'
 
   build:
     needs: checks

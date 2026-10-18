@@ -107,6 +107,41 @@ jobs:
     uses: GrzybDev/actions/.github/workflows/python-app.yml@v1
 ```
 
+## C++ DLL builds
+
+Two reusable workflows build a Visual Studio solution, `<repository name>.slnx` unless `solution` names another, whose
+x64 projects take their libraries from a vcpkg manifest and write to `x64\<configuration>`, with a GoogleTest
+executable `<repository name>.Tests.exe` there.
+
+`cpp-checks.yml` builds the Debug configuration, runs the tests, analyzes the code with CodeQL (leaving out what vcpkg
+built) and keeps the build, without the files named after the repository such as the tests, as the `DebugBuild`
+artifact; it reuses what vcpkg built in earlier runs. The calling workflow grants `security-events: write` for the
+analysis. `cpp-dll.yml` builds the Release configuration from scratch, runs the tests, signs the `library` with
+`codesign` and attaches it to the release `v<version>`:
+
+```yaml
+jobs:
+  checks:
+    permissions:
+      contents: read
+      security-events: write
+    uses: GrzybDev/actions/.github/workflows/cpp-checks.yml@v1
+
+  version:
+    # bump-version, as above
+
+  build:
+    needs: version
+    permissions:
+      contents: write
+    uses: GrzybDev/actions/.github/workflows/cpp-dll.yml@v1
+    secrets: inherit
+    with:
+      version: ${{ needs.version.outputs.version }}
+      ref: ${{ needs.version.outputs.ref }}
+      library: MFReadWrite.dll
+```
+
 ## Development
 
 The signing scripts have Pester 5 tests, which CI runs as well:

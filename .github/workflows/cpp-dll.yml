@@ -1,0 +1,67 @@
+name: C++ DLL release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: The version to release; the library is signed and attached to the release v<version>.
+        type: string
+        required: true
+      ref:
+        description: The ref to build, such as the commit that bump-version gives; the triggering commit when empty.
+        type: string
+        default: ''
+      library:
+        description: The DLL the solution builds, such as MFReadWrite.dll.
+        type: string
+        required: true
+      solution:
+        description: The solution to build; <repository name>.slnx when empty.
+        type: string
+        default: ''
+
+jobs:
+  build:
+    name: Build
+    runs-on: windows-2025-vs2026
+    # The signing machine never signs a file uploaded longer ago, so the two change together.
+    timeout-minutes: 150
+    env:
+      SOLUTION: ${{ inputs.solution || format('{0}.slnx', github.event.repository.name) }}
+      TESTS: x64/Release/${{ github.event.repository.name }}.Tests.exe
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v3
+
+      - name: Integrate vcpkg
+        run: vcpkg integrate install
+
+      - name: Build
+        run: msbuild $env:SOLUTION -property:Configuration=Release
+
+      - name: Test
+        run: '& $env:TESTS'
+
+      - name: Sign the library
+        uses: GrzybDev/actions/codesign@v1
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+          AWS_ENDPOINT_URL: ${{ secrets.AWS_ENDPOINT_URL }}
+        with:
+          files: x64/Release/${{ inputs.library }}
+          version: ${{ inputs.version }}
+          store: ${{ vars.SIGNING_STORE || 's3://codesign' }}
+          subject: ${{ vars.SIGNING_SUBJECT }}
+
+      - name: Attach the library to the release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: x64/Release/${{ inputs.library }}
+          tag_name: v${{ inputs.version }}

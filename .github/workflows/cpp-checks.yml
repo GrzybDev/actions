@@ -1,0 +1,81 @@
+name: C++ checks
+
+on:
+  workflow_call:
+    inputs:
+      solution:
+        description: The solution to build; <repository name>.slnx when empty.
+        type: string
+        default: ''
+
+jobs:
+  build:
+    name: Build, test and analyze
+    runs-on: windows-2025-vs2026
+    env:
+      SOLUTION: ${{ inputs.solution || format('{0}.slnx', github.event.repository.name) }}
+      TESTS: x64/Debug/${{ github.event.repository.name }}.Tests.exe
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v3
+
+      - name: Integrate vcpkg
+        run: vcpkg integrate install
+
+      # Debug builds reuse what vcpkg built before; a release builds it from scratch, so that no cached binary can find
+      # its way into it.
+      - name: Restore the vcpkg cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/vcpkg
+          key: vcpkg-${{ runner.arch }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}-${{ github.sha }}
+          restore-keys: |
+            vcpkg-${{ runner.arch }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}-
+            vcpkg-${{ runner.arch }}-
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: cpp
+          build-mode: manual
+          queries: security-extended,security-and-quality
+
+      - name: Build
+        env:
+          VCPKG_BINARY_SOURCES: clear;files,${{ runner.temp }}/vcpkg,readwrite
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP/vcpkg" | Out-Null
+          msbuild $env:SOLUTION -property:Configuration=Debug
+
+      - name: Test
+        run: '& $env:TESTS'
+
+      - name: Analyze with CodeQL
+        uses: github/codeql-action/analyze@v4
+        with:
+          output: sarif-results
+          upload: failure-only
+
+      - name: Leave out the libraries vcpkg built
+        uses: advanced-security/filter-sarif@v1
+        with:
+          patterns: |
+            -vcpkg_installed/**
+          input: sarif-results/cpp.sarif
+          output: sarif-results/cpp.sarif
+
+      - name: Upload the analysis
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: sarif-results/cpp.sarif
+
+      - name: Keep the debug build
+        uses: actions/upload-artifact@v7
+        with:
+          name: DebugBuild
+          path: |
+            x64/Debug
+            !x64/Debug/${{ github.event.repository.name }}.*

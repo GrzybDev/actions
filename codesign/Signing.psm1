@@ -2,7 +2,9 @@
 
 Set-StrictMode -Version Latest
 
-# A store is s3://<bucket>[/<prefix>], reached through the AWS CLI with its AWS_* settings, or a local folder.
+# A store is s3://<bucket>[/<prefix>], reached through the AWS CLI with its AWS_* settings, or a local folder. S3 calls
+# go through s3api: since AWS CLI 2.38 the s3 commands sign with the CRT client, which also signs the Content-Length of
+# a request without a body, a header that a proxy in front of the store may drop.
 function Get-S3Location([string]$Store) {
     if ($Store -match '^s3://(?<bucket>[^/]+)/*(?<prefix>.*?)/*$') {
         $prefix = if ($Matches.prefix) { "$($Matches.prefix)/" } else { '' }
@@ -20,7 +22,7 @@ function Invoke-Aws([string[]]$Arguments) {
 function Send-StoreFile([string]$Store, [string]$Key, [string]$Path) {
     $s3 = Get-S3Location $Store
     if ($s3) {
-        Invoke-Aws @('s3', 'cp', $Path, "s3://$($s3.Bucket)/$($s3.Prefix)$Key", '--only-show-errors') | Out-Null
+        Invoke-Aws @('s3api', 'put-object', '--bucket', $s3.Bucket, '--key', "$($s3.Prefix)$Key", '--body', $Path) | Out-Null
         return
     }
     $target = Join-Path $Store $Key
@@ -35,7 +37,7 @@ function Send-StoreFile([string]$Store, [string]$Key, [string]$Path) {
 
 function Receive-StoreFile([string]$Store, [string]$Key, [string]$Path) {
     $s3 = Get-S3Location $Store
-    if ($s3) { Invoke-Aws @('s3', 'cp', "s3://$($s3.Bucket)/$($s3.Prefix)$Key", $Path, '--only-show-errors') | Out-Null }
+    if ($s3) { Invoke-Aws @('s3api', 'get-object', '--bucket', $s3.Bucket, '--key', "$($s3.Prefix)$Key", $Path) | Out-Null }
     else { Copy-Item -LiteralPath (Join-Path $Store $Key) $Path -Force }
 }
 
@@ -69,7 +71,7 @@ function Test-StoreFile([string]$Store, [string]$Key) {
 function Remove-StoreFile([string]$Store, [string]$Key) {
     $s3 = Get-S3Location $Store
     if ($s3) {
-        Invoke-Aws @('s3', 'rm', "s3://$($s3.Bucket)/$($s3.Prefix)$Key", '--only-show-errors') | Out-Null
+        Invoke-Aws @('s3api', 'delete-object', '--bucket', $s3.Bucket, '--key', "$($s3.Prefix)$Key") | Out-Null
         return
     }
     $path = Join-Path $Store $Key

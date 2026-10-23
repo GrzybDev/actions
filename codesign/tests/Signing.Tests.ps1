@@ -35,19 +35,61 @@ BeforeAll {
         return [pscustomobject]@{ Process = $process; Log = $log }
     }
 
-    function Start-SignRemote([string[]]$Files, [hashtable]$Settings = @{}) {
-        $environment = $release.Clone()
-        foreach ($name in $Settings.Keys) { $environment[$name] = $Settings[$name] }
+    function Invoke-WithEnvironment([hashtable]$Variables, [scriptblock]$Script) {
         $previous = @{}
-        foreach ($name in $environment.Keys) {
+        foreach ($name in $Variables.Keys) {
             $previous[$name] = [Environment]::GetEnvironmentVariable($name)
-            [Environment]::SetEnvironmentVariable($name, $environment[$name])
+            [Environment]::SetEnvironmentVariable($name, $Variables[$name])
         }
         try {
-            return Start-Script 'sign-remote.ps1' (@('-AllowUntrustedRoot') + @($Files | ForEach-Object { "`"$_`"" }))
+            & $Script
         }
         finally {
             foreach ($name in $previous.Keys) { [Environment]::SetEnvironmentVariable($name, $previous[$name]) }
+        }
+    }
+
+    function Start-SignRemote([string[]]$Files, [hashtable]$Settings = @{}) {
+        $environment = $release.Clone()
+        foreach ($name in $Settings.Keys) { $environment[$name] = $Settings[$name] }
+        Invoke-WithEnvironment $environment {
+            Start-Script 'sign-remote.ps1' (@('-AllowUntrustedRoot') + @($Files | ForEach-Object { "`"$_`"" }))
+        }
+    }
+
+    function Wait-Line($Started, [string]$Pattern) {
+        $deadline = [DateTime]::UtcNow.AddMinutes(3)
+        while (-not ($line = Select-String -LiteralPath $Started.Log -Pattern $Pattern | Select-Object -First 1)) {
+            if ($Started.Process.HasExited -or [DateTime]::UtcNow -gt $deadline) {
+                throw "No line matched $Pattern in: $(Get-Content $Started.Log, "$($Started.Log).err" -Raw)"
+            }
+            Start-Sleep -Milliseconds 200
+        }
+        return $line.Matches[0]
+    }
+
+    # Returns once sign-pending.ps1 watches: finding signtool can take most of a minute on a runner, which would count
+    # against the release's timeout.
+    function Start-Signer([string]$Store) {
+        $signer = Start-Script 'sign-pending.ps1' @('-Watch', '-Store', "`"$Store`"", '-CertificateThumbprint',
+            $certificate.Thumbprint, '-TimestampUrl', '""', '-IntervalSeconds', '1', '-SettleSeconds', '1', '-AllowUntrustedRoot')
+        try {
+            Wait-Line $signer '^Watching ' | Out-Null
+        }
+        catch {
+            Stop-Script $signer
+            throw
+        }
+        return $signer
+    }
+
+    function Stop-Script($Started) {
+        Stop-Process -Id $Started.Process.Id
+        $Started.Process.WaitForExit()
+        # A call to the AWS CLI that it was running holds its log open until it ends.
+        Get-CimInstance Win32_Process -Filter "ParentProcessId = $($Started.Process.Id)" | ForEach-Object {
+            Stop-Process -Id $_.ProcessId -ErrorAction SilentlyContinue
+            Wait-Process -Id $_.ProcessId -ErrorAction SilentlyContinue
         }
     }
 
@@ -101,22 +143,13 @@ Describe 'Signing through a store' {
         $again = Join-Path $TestDrive 'again\first.dll'
         New-Item -ItemType Directory (Split-Path -Parent $again) | Out-Null
         Copy-Item $first $again
-        $signer = Start-Script 'sign-pending.ps1' @('-Watch', '-Store', "`"$store`"", '-CertificateThumbprint',
-            $certificate.Thumbprint, '-TimestampUrl', '""', '-IntervalSeconds', '1', '-SettleSeconds', '1', '-AllowUntrustedRoot')
+        $signer = Start-Signer $store
         try {
-            # Finding signtool can take most of a minute on a runner, which would count against the release's timeout.
-            $deadline = [DateTime]::UtcNow.AddMinutes(3)
-            while (-not (Select-String -LiteralPath $signer.Log -Pattern '^Watching ' -Quiet)) {
-                if ($signer.Process.HasExited -or [DateTime]::UtcNow -gt $deadline) {
-                    throw "sign-pending.ps1 never started watching: $(Get-Content $signer.Log, "$($signer.Log).err" -Raw)"
-                }
-                Start-Sleep -Milliseconds 200
-            }
             $result = Wait-Script (Start-SignRemote $first, $second)
             $againResult = Wait-Script (Start-SignRemote $again)
         }
         finally {
-            Stop-Process -Id $signer.Process.Id
+            Stop-Script $signer
         }
 
         $result.ExitCode | Should -Be 0
@@ -127,6 +160,40 @@ Describe 'Signing through a store' {
         @(Get-Content $signer.Log | Where-Object { $_ -like 'Signing * file(s)*' }) |
             Should -Be 'Signing 2 file(s) with one signtool call:', 'Signing 1 file(s) with one signtool call:'
         Get-StoreContent $store | Should -BeNullOrEmpty
+    }
+
+    It 'signs through an S3 store whose proxy drops the Content-Length of requests without a body' {
+        $file = New-UnsignedFile 'stored.dll'
+        $buckets = Join-Path $TestDrive 'buckets'
+        $config = Join-Path $TestDrive 'aws-config'
+        # The AWS CLI's s3 commands sign with the CRT client on the runners; this makes them do so wherever this runs.
+        Set-Content $config "[default]`ns3 =`n  preferred_transfer_client = crt"
+        $aws = @{
+            AWS_CONFIG_FILE = $config; AWS_SHARED_CREDENTIALS_FILE = $config; AWS_PROFILE = $null
+            AWS_ACCESS_KEY_ID = 'sample-key'; AWS_SECRET_ACCESS_KEY = 'sample-secret'; AWS_SESSION_TOKEN = $null
+            AWS_DEFAULT_REGION = 'us-east-1'; AWS_ENDPOINT_URL_S3 = $null
+        }
+        $server = Start-Script 'tests\FakeS3Store.ps1' @('-Root', "`"$buckets`"")
+        try {
+            $aws.AWS_ENDPOINT_URL = "http://127.0.0.1:$((Wait-Line $server '^Listening on (\d+)').Groups[1].Value)"
+            $result = Invoke-WithEnvironment $aws {
+                $signer = Start-Signer 's3://codesign/releases'
+                try {
+                    Wait-Script (Start-SignRemote $file @{ SIGNING_STORE = 's3://codesign/releases' })
+                }
+                finally {
+                    Stop-Script $signer
+                }
+            }
+        }
+        finally {
+            Stop-Script $server
+        }
+
+        $result.Output | Should -Match 'Signed stored\.dll\.'
+        $result.ExitCode | Should -Be 0
+        Get-Signer $file | Should -Be $certificate.Thumbprint
+        @(Get-ChildItem $buckets -Recurse -File) | Should -BeNullOrEmpty
     }
 
     It 'never picks a certificate the system does not trust' {

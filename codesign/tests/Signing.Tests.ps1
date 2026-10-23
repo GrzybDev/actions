@@ -35,17 +35,22 @@ BeforeAll {
         return [pscustomobject]@{ Process = $process; Log = $log }
     }
 
+    # PowerShell hands $null to .NET as an empty string, which .NET Framework removes but PowerShell 7's .NET keeps.
+    function Set-EnvironmentVariable([string]$Name, [string]$Value) {
+        if ($Value) { Set-Item "Env:$Name" $Value } else { Remove-Item "Env:$Name" -ErrorAction SilentlyContinue }
+    }
+
     function Invoke-WithEnvironment([hashtable]$Variables, [scriptblock]$Script) {
         $previous = @{}
         foreach ($name in $Variables.Keys) {
             $previous[$name] = [Environment]::GetEnvironmentVariable($name)
-            [Environment]::SetEnvironmentVariable($name, $Variables[$name])
+            Set-EnvironmentVariable $name $Variables[$name]
         }
         try {
             & $Script
         }
         finally {
-            foreach ($name in $previous.Keys) { [Environment]::SetEnvironmentVariable($name, $previous[$name]) }
+            foreach ($name in $previous.Keys) { Set-EnvironmentVariable $name $previous[$name] }
         }
     }
 

@@ -150,5 +150,6 @@ The signing scripts have Pester 5 tests, which CI runs as well:
 Invoke-Pester codesign/tests
 ```
 
-They sign through a folder store with a short-lived self-signed certificate that they add to the current user's store
-and remove with its key when they end.
+They sign with a short-lived self-signed certificate that they add to the current user's store and remove with its key
+when they end, through a folder store and through an S3 store that a script serves on 127.0.0.1, which needs the AWS
+CLI.

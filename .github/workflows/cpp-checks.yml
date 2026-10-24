@@ -7,6 +7,10 @@ on:
         description: The solution to build; <repository name>.slnx when empty.
         type: string
         default: ''
+      platform:
+        description: The solution platform to build, such as x86; x64 when empty.
+        type: string
+        default: ''
 
 jobs:
   build:
@@ -14,7 +18,10 @@ jobs:
     runs-on: windows-2025-vs2026
     env:
       SOLUTION: ${{ inputs.solution || format('{0}.slnx', github.event.repository.name) }}
-      TESTS: x64/Debug/${{ github.event.repository.name }}.Tests.exe
+      PLATFORM: ${{ inputs.platform || 'x64' }}
+      # MSBuild writes the Win32 projects of the x86 platform to <configuration>, without a platform folder.
+      OUTPUT: ${{ inputs.platform == 'x86' && 'Debug' || format('{0}/Debug', inputs.platform || 'x64') }}
+      TESTS: ${{ github.event.repository.name }}.Tests.exe
 
     steps:
       - uses: actions/checkout@v7
@@ -48,10 +55,10 @@ jobs:
           VCPKG_BINARY_SOURCES: clear;files,${{ runner.temp }}/vcpkg,readwrite
         run: |
           New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP/vcpkg" | Out-Null
-          msbuild $env:SOLUTION -property:Configuration=Debug
+          msbuild $env:SOLUTION -property:Configuration=Debug -property:Platform=$env:PLATFORM
 
       - name: Test
-        run: '& $env:TESTS'
+        run: '& "$env:OUTPUT/$env:TESTS"'
 
       - name: Analyze with CodeQL
         uses: github/codeql-action/analyze@v4
@@ -77,5 +84,5 @@ jobs:
         with:
           name: DebugBuild
           path: |
-            x64/Debug
-            !x64/Debug/${{ github.event.repository.name }}.*
+            ${{ env.OUTPUT }}
+            !${{ env.OUTPUT }}/${{ github.event.repository.name }}.*

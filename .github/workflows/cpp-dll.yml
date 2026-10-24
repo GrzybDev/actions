@@ -19,6 +19,10 @@ on:
         description: The solution to build; <repository name>.slnx when empty.
         type: string
         default: ''
+      platform:
+        description: The solution platform to build, such as x86; x64 when empty.
+        type: string
+        default: ''
 
 jobs:
   build:
@@ -28,7 +32,10 @@ jobs:
     timeout-minutes: 150
     env:
       SOLUTION: ${{ inputs.solution || format('{0}.slnx', github.event.repository.name) }}
-      TESTS: x64/Release/${{ github.event.repository.name }}.Tests.exe
+      PLATFORM: ${{ inputs.platform || 'x64' }}
+      # MSBuild writes the Win32 projects of the x86 platform to <configuration>, without a platform folder.
+      OUTPUT: ${{ inputs.platform == 'x86' && 'Release' || format('{0}/Release', inputs.platform || 'x64') }}
+      TESTS: ${{ github.event.repository.name }}.Tests.exe
 
     steps:
       - uses: actions/checkout@v7
@@ -42,10 +49,10 @@ jobs:
         run: vcpkg integrate install
 
       - name: Build
-        run: msbuild $env:SOLUTION -property:Configuration=Release
+        run: msbuild $env:SOLUTION -property:Configuration=Release -property:Platform=$env:PLATFORM
 
       - name: Test
-        run: '& $env:TESTS'
+        run: '& "$env:OUTPUT/$env:TESTS"'
 
       - name: Sign the library
         uses: GrzybDev/actions/codesign@v1
@@ -55,7 +62,7 @@ jobs:
           AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
           AWS_ENDPOINT_URL: ${{ secrets.AWS_ENDPOINT_URL }}
         with:
-          files: x64/Release/${{ inputs.library }}
+          files: ${{ env.OUTPUT }}/${{ inputs.library }}
           version: ${{ inputs.version }}
           store: ${{ vars.SIGNING_STORE || 's3://codesign' }}
           subject: ${{ vars.SIGNING_SUBJECT }}
@@ -63,5 +70,5 @@ jobs:
       - name: Attach the library to the release
         uses: softprops/action-gh-release@v3
         with:
-          files: x64/Release/${{ inputs.library }}
+          files: ${{ env.OUTPUT }}/${{ inputs.library }}
           tag_name: v${{ inputs.version }}

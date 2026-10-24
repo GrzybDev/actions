@@ -109,9 +109,10 @@ jobs:
 
 ## C++ DLL builds
 
-Two reusable workflows build a Visual Studio solution, `<repository name>.slnx` unless `solution` names another, whose
-x64 projects take their libraries from a vcpkg manifest and write to `x64\<configuration>`, with a GoogleTest
-executable `<repository name>.Tests.exe` there.
+Two reusable workflows build a Visual Studio solution, `<repository name>.slnx` unless `solution` names another, for
+the solution platform `platform`, `x64` when empty. Its projects take their libraries from a vcpkg manifest and write
+to `<platform>\<configuration>`, or for `x86`, whose projects are Win32, to `<configuration>`, with a GoogleTest
+executable `<repository name>.Tests.exe` there. A 32-bit library passes `platform: x86` to both workflows.
 
 `cpp-checks.yml` builds the Debug configuration, runs the tests, analyzes the code with CodeQL (leaving out what vcpkg
 built) and keeps the build, without the files named after the repository such as the tests, as the `DebugBuild`

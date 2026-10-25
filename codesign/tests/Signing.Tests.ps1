@@ -35,6 +35,11 @@ BeforeAll {
         return [pscustomobject]@{ Process = $process; Log = $log }
     }
 
+    # With a .env that does not exist, so that the codesign\.env of the machine never applies to a test.
+    function Start-SignPending([string[]]$Arguments) {
+        Start-Script 'sign-pending.ps1' (@('-EnvFile', "`"$(Join-Path $TestDrive 'absent.env')`"") + $Arguments)
+    }
+
     # PowerShell hands $null to .NET as an empty string, which .NET Framework removes but PowerShell 7's .NET keeps.
     function Set-EnvironmentVariable([string]$Name, [string]$Value) {
         if ($Value) { Set-Item "Env:$Name" $Value } else { Remove-Item "Env:$Name" -ErrorAction SilentlyContinue }
@@ -76,7 +81,7 @@ BeforeAll {
     # Returns once sign-pending.ps1 watches: finding signtool can take most of a minute on a runner, which would count
     # against the release's timeout.
     function Start-Signer([string]$Store) {
-        $signer = Start-Script 'sign-pending.ps1' @('-Watch', '-Store', "`"$Store`"", '-CertificateThumbprint',
+        $signer = Start-SignPending @('-Watch', '-Store', "`"$Store`"", '-CertificateThumbprint',
             $certificate.Thumbprint, '-TimestampUrl', '""', '-IntervalSeconds', '1', '-SettleSeconds', '1', '-AllowUntrustedRoot')
         try {
             Wait-Line $signer '^Watching ' | Out-Null
@@ -202,7 +207,7 @@ Describe 'Signing through a store' {
     }
 
     It 'never picks a certificate the system does not trust' {
-        $result = Wait-Script (Start-Script 'sign-pending.ps1' @('-Store', "`"$(Join-Path $TestDrive 'empty')`"",
+        $result = Wait-Script (Start-SignPending @('-Store', "`"$(Join-Path $TestDrive 'empty')`"",
             '-TimestampUrl', '""'))
 
         $result.Output | Should -Match 'Signing as |No trusted code-signing certificate'
@@ -215,7 +220,7 @@ Describe 'Signing through a store' {
         Add-StoreEntry $swapped "unsigned/sample-repository/sample-app/v1.2.3/$('0' * 64)/swapped.dll" $file
         Add-StoreEntry $swapped 'unsigned/other-layout/swapped.dll' $file
 
-        $result = Wait-Script (Start-Script 'sign-pending.ps1' @('-Store', "`"$swapped`"", '-CertificateThumbprint',
+        $result = Wait-Script (Start-SignPending @('-Store', "`"$swapped`"", '-CertificateThumbprint',
             $certificate.Thumbprint, '-TimestampUrl', '""', '-SettleSeconds', '0', '-AllowUntrustedRoot'))
 
         $result.ExitCode | Should -Be 0
@@ -295,7 +300,7 @@ Describe 'Files that no release waits for' {
         # Held open without delete sharing, it cannot be removed, as with a store key that may not delete.
         $lock = [System.IO.File]::Open((Join-Path $aged (Get-EntryKey 'unsigned' $kept)), 'Open', 'Read', 'Read')
         try {
-            $result = Wait-Script (Start-Script 'sign-pending.ps1' @('-Store', "`"$aged`"", '-CertificateThumbprint',
+            $result = Wait-Script (Start-SignPending @('-Store', "`"$aged`"", '-CertificateThumbprint',
                 $certificate.Thumbprint, '-TimestampUrl', '""', '-SettleSeconds', '0', '-AllowUntrustedRoot'))
         }
         finally {
@@ -311,5 +316,44 @@ Describe 'Files that no release waits for' {
         Get-StoreContent $aged | Should -Be @((Get-EntryKey 'signed' $fresh), (Get-EntryKey 'unsigned' $fresh),
             (Get-EntryKey 'unsigned' $kept), 'unsigned/other-repository/v1.0.0/tool.exe' | Sort-Object)
         Get-Signer (Join-Path $aged (Get-EntryKey 'signed' $fresh)) | Should -Be $certificate.Thumbprint
+    }
+}
+
+Describe 'The AWS CLI profile of the signing machine' {
+    BeforeAll {
+        # Stands in for the AWS CLI: records the profile of each call and answers that the store is empty.
+        $bin = Join-Path $TestDrive 'aws-bin'
+        $profiles = Join-Path $bin 'profiles.txt'
+        New-Item -ItemType Directory $bin | Out-Null
+        Set-Content (Join-Path $bin 'aws.cmd') -Encoding Ascii -Value '@echo off',
+            '>>"%~dp0profiles.txt" echo(%AWS_PROFILE%', 'echo null'
+        $envFile = Join-Path $TestDrive 'profile.env'
+        [System.IO.File]::WriteAllLines($envFile, [string[]]@('AWS_ACCESS_KEY_ID=sample-key-id',
+            'AWS_PROFILE=sample-file-profile'))
+        $originalPath = $env:PATH
+        $env:PATH = "$bin;$env:PATH"
+        (Get-Command aws).Source | Should -Be (Join-Path $bin 'aws.cmd')
+    }
+
+    AfterAll {
+        $env:PATH = $originalPath
+    }
+
+    It 'uses <expected> for its AWS CLI calls and leaves the environment as it was' -ForEach @(
+        @{ Environment = $null; Expected = 'sample-file-profile' }
+        @{ Environment = 'sample-environment-profile'; Expected = 'sample-environment-profile' }
+    ) {
+        Remove-Item $profiles -ErrorAction SilentlyContinue
+        $arguments = @{
+            Store = 's3://sample-bucket'; EnvFile = $envFile; CertificateThumbprint = $certificate.Thumbprint
+            TimestampUrl = ''
+        }
+        Invoke-WithEnvironment @{ AWS_PROFILE = $Environment } {
+            # In this process, as when run from a console, so that a profile left behind shows here.
+            & "$scripts\sign-pending.ps1" @arguments 6>$null
+            $env:AWS_PROFILE | Should -Be $Environment
+        }
+
+        Get-Content $profiles | Sort-Object -Unique | Should -Be $Expected
     }
 }

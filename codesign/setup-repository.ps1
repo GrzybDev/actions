@@ -8,8 +8,9 @@ Sets the secrets and variables that a repository's releases need to sign with th
 Reads KEY=value lines from a .env file, which .env.example lists, and sets them on the repository with the GitHub CLI:
 AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION and AWS_ENDPOINT_URL as Actions secrets, SIGNING_SUBJECT
 and SIGNING_STORE as Actions variables. A key that the file leaves out or empty keeps what the repository has; without
-SIGNING_STORE, workflows sign through s3://codesign. Blank lines and lines starting with # are skipped, and a value may
-be quoted. The values reach gh through its standard input and are never printed.
+SIGNING_STORE, workflows sign through s3://codesign. AWS_PROFILE, which only sign-pending.ps1 reads, is never set.
+Blank lines and lines starting with # are skipped, and a value may be quoted. The values reach gh through its standard
+input and are never printed.
 
 .EXAMPLE
 codesign\setup-repository.ps1 -Repository GrzybDev/MetalGearRedirector -WhatIf
@@ -27,26 +28,18 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+Import-Module (Join-Path $PSScriptRoot 'Signing.psm1') -Force
 
 $secrets = 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_DEFAULT_REGION', 'AWS_ENDPOINT_URL'
 $variables = 'SIGNING_SUBJECT', 'SIGNING_STORE'
 
 if (-not (Test-Path -LiteralPath $EnvFile)) { throw "$EnvFile does not exist: fill in a copy of .env.example there." }
-# The whole file is checked before anything is set, so that a mistyped key leaves no repository half set up. No message
-# repeats a line, which may hold a secret.
-$values = @{}
-$number = 0
-foreach ($line in Get-Content -LiteralPath $EnvFile -Encoding UTF8) {
-    $number++
-    if ($line -match '^\s*(#|$)') { continue }
-    if ($line -notmatch '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$') {
-        throw "Line $number of $EnvFile is not KEY=value."
+# The whole file is checked before anything is set, so that a mistyped key leaves no repository half set up.
+$values = Read-EnvFile $EnvFile
+foreach ($key in $values.Keys) {
+    if (($secrets + $variables + 'AWS_PROFILE') -notcontains $key) {
+        throw "$EnvFile sets $key, which neither this script nor sign-pending.ps1 reads."
     }
-    $key, $value = $Matches[1], ($Matches[2] -replace '^(["''])(.*)\1$', '$2')
-    if (($secrets + $variables) -notcontains $key) {
-        throw "Line $number of $EnvFile sets $key, which this script does not set."
-    }
-    $values[$key] = $value
 }
 
 # Windows PowerShell pipes text to programs in ASCII, which turns the accented letters of a subject into question marks;

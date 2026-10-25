@@ -32,11 +32,11 @@ Describe 'Setting up a repository' {
         $env:GH_EXIT_CODE = '0'
     }
 
-    It 'sets nothing with -WhatIf, then each key that the file gives, with its value only on standard input' {
+    It 'sets nothing with -WhatIf, then each repository key the file gives, with its value only on standard input' {
         $subject = "CN=Sample Signer, L=Sample Town$([char]0xE9), C=PL"
         Set-EnvFile '# Sample values', '', 'AWS_ACCESS_KEY_ID=sample-key-id',
             ' AWS_SECRET_ACCESS_KEY = "sample secret" ', 'AWS_DEFAULT_REGION=sample-region',
-            "SIGNING_SUBJECT='$subject'", 'SIGNING_STORE='
+            "SIGNING_SUBJECT='$subject'", 'SIGNING_STORE=', 'AWS_PROFILE=sample-profile'
 
         & $setupScript -Repository $repository -EnvFile $envFile -WhatIf
         Test-Path $arguments | Should -BeFalse
@@ -51,8 +51,8 @@ Describe 'Setting up a repository' {
     }
 
     It 'refuses a file with <problem> before it sets anything, without repeating the line' -ForEach @(
-        @{ Problem = 'a key it does not set'; Line = 'AWS_SESSION_TOKEN=sample-token'
-            Message = 'Line 2 of * sets AWS_SESSION_TOKEN, which this script does not set.' }
+        @{ Problem = 'a key that no script reads'; Line = 'AWS_SESSION_TOKEN=sample-token'
+            Message = '* sets AWS_SESSION_TOKEN, which neither this script nor sign-pending.ps1 reads.' }
         @{ Problem = 'a line that is not KEY=value'; Line = 'sample-token'; Message = 'Line 2 of * is not KEY=value.' }
     ) {
         Set-EnvFile 'AWS_ACCESS_KEY_ID=sample-key-id', $Line

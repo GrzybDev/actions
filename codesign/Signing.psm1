@@ -125,5 +125,21 @@ function Test-SignedCopy([string]$Unsigned, [string]$Signed) {
     return $same -and $table -ge $length -and $table -lt $length + 8 -and $tableEnd -eq $copy.Length
 }
 
+# The KEY=value lines of a .env file as a hashtable, skipping blank lines and lines starting with #; a value may be
+# quoted. No error repeats a line, which may hold a secret.
+function Read-EnvFile([string]$Path) {
+    $values = @{}
+    $number = 0
+    foreach ($line in Get-Content -LiteralPath $Path -Encoding UTF8) {
+        $number++
+        if ($line -match '^\s*(#|$)') { continue }
+        if ($line -notmatch '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$') {
+            throw "Line $number of $Path is not KEY=value."
+        }
+        $values[$Matches[1]] = $Matches[2] -replace '^(["''])(.*)\1$', '$2'
+    }
+    return $values
+}
+
 Export-ModuleMember -Function Send-StoreFile, Receive-StoreFile, Get-StoreFiles, Test-StoreFile, Remove-StoreFile,
-    Confirm-CodeSignature, Test-SignedCopy
+    Confirm-CodeSignature, Test-SignedCopy, Read-EnvFile

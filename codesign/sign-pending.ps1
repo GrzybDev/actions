@@ -13,6 +13,9 @@ are removed instead of signed.
 The certificate is the one given by -CertificateThumbprint, otherwise the newest trusted code-signing certificate with a
 private key in the current user's store, where proCertum CardManager registers the certificate of a Certum card.
 
+The AWS CLI uses the profile that AWS_PROFILE names in the environment or, without it, in the .env file that
+setup-repository.ps1 reads.
+
 .EXAMPLE
 codesign\sign-pending.ps1 -Watch
 #>
@@ -37,7 +40,10 @@ param(
     [string]$SignToolPath,
 
     # Accepts a certificate that chains to no trusted root, as one made for tests does.
-    [switch]$AllowUntrustedRoot
+    [switch]$AllowUntrustedRoot,
+
+    # KEY=value lines whose AWS_PROFILE the AWS CLI uses when the environment sets none.
+    [string]$EnvFile = (Join-Path $PSScriptRoot '.env')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -167,30 +173,43 @@ function Invoke-SigningRound([string[]]$Entries) {
     }
 }
 
+$awsProfile = if (-not $env:AWS_PROFILE -and (Test-Path -LiteralPath $EnvFile)) {
+    (Read-EnvFile $EnvFile)['AWS_PROFILE']
+}
 $signTool = Find-SignTool
 $certificate = Find-Certificate
 $timestamp = if ($TimestampUrl) { @('/tr', $TimestampUrl, '/td', 'SHA256') } else { @() }
 Write-Host "Signing as $($certificate.Subject) ($($certificate.Thumbprint)) with $signTool."
+if ($awsProfile) {
+    Write-Host "The AWS CLI uses the profile $awsProfile from $EnvFile."
+    # Removed when the script ends, since a script run from a console shares the console's environment.
+    $env:AWS_PROFILE = $awsProfile
+}
 if ($Watch) { Write-Host "Watching $Store for files to sign; stop with Ctrl+C." }
 
-do {
-    try {
-        $pending = @(Get-PendingEntries)
-        if ($pending.Count) {
-            do {
-                $seen = $pending.Count
-                Start-Sleep -Seconds $SettleSeconds
-                $pending = @(Get-PendingEntries)
-            } while ($pending.Count -gt $seen)
-            Invoke-SigningRound $pending
+try {
+    do {
+        try {
+            $pending = @(Get-PendingEntries)
+            if ($pending.Count) {
+                do {
+                    $seen = $pending.Count
+                    Start-Sleep -Seconds $SettleSeconds
+                    $pending = @(Get-PendingEntries)
+                } while ($pending.Count -gt $seen)
+                Invoke-SigningRound $pending
+            }
+            elseif (-not $Watch) {
+                Write-Host "No file waits for a signature in $Store."
+            }
         }
-        elseif (-not $Watch) {
-            Write-Host "No file waits for a signature in $Store."
+        catch {
+            if (-not $Watch) { throw }
+            Write-Warning "$($_.Exception.Message) Trying again in $IntervalSeconds s."
         }
-    }
-    catch {
-        if (-not $Watch) { throw }
-        Write-Warning "$($_.Exception.Message) Trying again in $IntervalSeconds s."
-    }
-    if ($Watch) { Start-Sleep -Seconds $IntervalSeconds }
-} while ($Watch)
+        if ($Watch) { Start-Sleep -Seconds $IntervalSeconds }
+    } while ($Watch)
+}
+finally {
+    if ($awsProfile) { Remove-Item Env:AWS_PROFILE }
+}

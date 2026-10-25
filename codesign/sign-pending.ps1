@@ -1,4 +1,5 @@
 #requires -Version 5.1
+
 <#
 .SYNOPSIS
 Code-signs the release files that wait in the signing store, with this machine's certificate.

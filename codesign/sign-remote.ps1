@@ -1,4 +1,5 @@
 #requires -Version 5.1
+
 <#
 .SYNOPSIS
 Has files code-signed on the machine that holds the certificate, through a signing store.

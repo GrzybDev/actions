@@ -30,6 +30,20 @@ environment. [`codesign/action.yml`](codesign/action.yml) describes every input.
 and a job that signs must end within 150 minutes, after which the signing machine removes a file instead of signing
 it. The store's key needs only to list, read, write and delete files in its bucket.
 
+### Setting up a repository
+
+A repository that signs needs the secrets and variables that the example reads. Fill in a copy of
+[`codesign/.env.example`](codesign/.env.example) named `codesign/.env`, which git ignores, and run this with the
+GitHub CLI signed in:
+
+```powershell
+codesign\setup-repository.ps1 -Repository <owner>/<name>
+```
+
+It sets the `AWS_*` keys as Actions secrets and `SIGNING_SUBJECT` and `SIGNING_STORE` as Actions variables; without
+`SIGNING_STORE`, the reusable workflows below sign through `s3://codesign`. A key that the file leaves out or empty
+keeps what the repository has. `-WhatIf` lists what it would set, and `-EnvFile` reads another file.
+
 ### The signing machine
 
 Keep this running there, from a clone of this repository, while a release signs; it signs each round of files in one
@@ -145,12 +159,12 @@ jobs:
 
 ## Development
 
-The signing scripts have Pester 5 tests, which CI runs as well:
+The codesign scripts have Pester 5 tests, which CI runs as well:
 
 ```powershell
 Invoke-Pester codesign/tests
 ```
 
-They sign with a short-lived self-signed certificate that they add to the current user's store and remove with its key
-when they end, through a folder store and through an S3 store that a script serves on 127.0.0.1, which needs the AWS
-CLI.
+The signing tests sign with a short-lived self-signed certificate that they add to the current user's store and remove
+with its key when they end, through a folder store and through an S3 store that a script serves on 127.0.0.1, which
+needs the AWS CLI.

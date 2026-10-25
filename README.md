@@ -57,7 +57,9 @@ Before the card asks for its PIN, the script lists the files of the round; enter
 of the release that is running. The store is `-Store`, else `SIGNING_STORE`, else `s3://codesign`. It needs Windows
 PowerShell 5.1 or PowerShell 7, the AWS CLI with the store's credentials and endpoint (in the environment or an AWS
 CLI profile), the card inserted with its certificate registered by proCertum CardManager, and `signtool` from Visual
-Studio or the Windows SDK. `Get-Help codesign\sign-pending.ps1 -Detailed` lists the other parameters.
+Studio or the Windows SDK. When the environment names no AWS CLI profile, it takes the one that an `AWS_PROFILE` line
+in `codesign/.env` names, for its own calls only; repositories never get that key. `Get-Help
+codesign\sign-pending.ps1 -Detailed` lists the other parameters.
 
 ## bump-version
 

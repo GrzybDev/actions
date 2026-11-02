@@ -1,0 +1,79 @@
+name: .NET checks
+
+on:
+  workflow_call:
+    inputs:
+      solution:
+        description: The solution to build and test; <repository name>.slnx when empty.
+        type: string
+        default: ''
+      runners:
+        description: The runners to build and test on, as a JSON list such as ["ubuntu-latest"].
+        type: string
+        default: '["ubuntu-latest", "windows-latest"]'
+      submodules:
+        description: Also check out the submodules, for a build that needs them.
+        type: boolean
+        default: false
+      allowed-licenses:
+        description: >-
+          A JSON file in the repository that lists the licenses, such as ["MIT", "Apache-2.0"], that every NuGet
+          package of the solution may have; the licenses are not checked when empty.
+        type: string
+        default: ''
+
+jobs:
+  test:
+    name: Build and test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: ${{ fromJSON(inputs.runners) }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOLUTION: ${{ inputs.solution || format('{0}.slnx', github.event.repository.name) }}
+      # A caller's environment does not reach a reusable workflow, so the opt-outs of the consumers' tools are set here.
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+      AVALONIA_TELEMETRY_OPTOUT: '1'
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: ${{ inputs.submodules }}
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
+
+      - name: Restore
+        run: dotnet restore "$SOLUTION" --locked-mode
+
+      # The packages are the same on every runner, so one of them checks their licenses.
+      - name: Check the package licenses
+        if: ${{ inputs.allowed-licenses && matrix.os == fromJSON(inputs.runners)[0] }}
+        env:
+          ALLOWED_LICENSES: ${{ inputs.allowed-licenses }}
+        run: >
+          dotnet tool exec nuget-license@4.0.18 --yes --
+          --input "$SOLUTION" --include-transitive --allowed-license-types "$ALLOWED_LICENSES"
+
+      - name: Build
+        run: dotnet build "$SOLUTION" -c Release --no-restore
+
+      - name: Test
+        id: test
+        run: >
+          dotnet test --solution "$SOLUTION" -c Release --no-build
+          --report-xunit-trx --results-directory "$RUNNER_TEMP/test-results"
+
+      - name: Keep the test results
+        if: ${{ failure() && steps.test.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ matrix.os }}
+          path: ${{ runner.temp }}/test-results

@@ -159,6 +159,28 @@ jobs:
       library: MFReadWrite.dll
 ```
 
+## .NET checks
+
+A reusable workflow restores a .NET solution, `<repository name>.slnx` unless `solution` names another, in locked
+mode, so every project needs its `packages.lock.json` (`RestorePackagesWithLockFile`), builds it in Release and runs
+its xunit.v3 tests on Microsoft.Testing.Platform, with the SDK and test runner that its `global.json` selects. Warnings
+fail the build where the projects make them errors; `submodules: true` checks out the submodules for a build that
+needs them. It builds and tests on Ubuntu and Windows unless `runners` lists other runners, and keeps the xunit TRX
+reports of a runner whose tests fail as the `test-results-<runner>` artifact.
+
+Given `allowed-licenses`, a JSON file in the repository such as `["MIT", "Apache-2.0"]`, the first runner checks with
+[nuget-license](https://github.com/sensslen/nuget-license) that every NuGet package the solution restores, transitive
+ones included, has a license that the file lists. A package whose license nuget-license cannot tell from its license
+expression, file or address fails the check:
+
+```yaml
+jobs:
+  checks:
+    uses: GrzybDev/actions/.github/workflows/dotnet-checks.yml@v1
+    with:
+      allowed-licenses: allowed-licenses.json
+```
+
 ## Development
 
 The codesign scripts have Pester 5 tests, which CI runs as well:

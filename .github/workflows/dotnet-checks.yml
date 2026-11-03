@@ -21,6 +21,12 @@ on:
           package of the solution may have; the licenses are not checked when empty.
         type: string
         default: ''
+      license-overrides:
+        description: >-
+          A JSON file in the repository that gives the license of packages whose license the check cannot tell, such as
+          [{"Id": "Package", "Version": "1.2.3", "License": "MIT"}]; used only with allowed-licenses.
+        type: string
+        default: ''
 
 jobs:
   test:
@@ -58,9 +64,11 @@ jobs:
         if: ${{ inputs.allowed-licenses && matrix.os == fromJSON(inputs.runners)[0] }}
         env:
           ALLOWED_LICENSES: ${{ inputs.allowed-licenses }}
+          LICENSE_OVERRIDES: ${{ inputs.license-overrides }}
         run: >
           dotnet tool exec nuget-license@4.0.18 --yes --
           --input "$SOLUTION" --include-transitive --allowed-license-types "$ALLOWED_LICENSES"
+          ${LICENSE_OVERRIDES:+--override-package-information "$LICENSE_OVERRIDES"}
 
       - name: Build
         run: dotnet build "$SOLUTION" -c Release --no-restore

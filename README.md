@@ -171,7 +171,14 @@ reports of a runner whose tests fail as the `test-results-<runner>` artifact.
 Given `allowed-licenses`, a JSON file in the repository such as `["MIT", "Apache-2.0"]`, the first runner checks with
 [nuget-license](https://github.com/sensslen/nuget-license) that every NuGet package the solution restores, transitive
 ones included, has a license that the file lists. A package whose license nuget-license cannot tell from its license
-expression, file or address fails the check:
+expression, file or address fails the check, unless `license-overrides` names a JSON file in the repository that gives
+the license of that package version as an SPDX expression:
+
+```json
+[
+  { "Id": "Some.Package", "Version": "1.2.3", "License": "MPL-1.1 OR GPL-2.0-or-later" }
+]
+```
 
 ```yaml
 jobs:
@@ -179,6 +186,7 @@ jobs:
     uses: GrzybDev/actions/.github/workflows/dotnet-checks.yml@v1
     with:
       allowed-licenses: allowed-licenses.json
+      license-overrides: license-overrides.json
 ```
 
 ## Development

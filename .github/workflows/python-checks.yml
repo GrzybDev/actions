@@ -15,6 +15,10 @@ on:
         description: System packages that the tests need on Linux runners, such as ffmpeg, separated by spaces.
         type: string
         default: ''
+      pnpm-build:
+        description: Run pnpm build on Node 24 from the locked packages before the tests, for tests that need what it builds.
+        type: boolean
+        default: false
       runners:
         description: The runners to test on, as a JSON list such as ["ubuntu-latest", "windows-latest"].
         type: string
@@ -65,6 +69,18 @@ jobs:
           read -ra packages <<< "$PACKAGES"
           sudo apt-get update
           sudo apt-get install -y "${packages[@]}"
+
+      - uses: actions/setup-node@v7
+        if: ${{ inputs.pnpm-build }}
+        with:
+          node-version: 24
+
+      - name: Build with pnpm
+        if: ${{ inputs.pnpm-build }}
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm build
 
       - name: Run the tests
         env:

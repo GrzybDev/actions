@@ -74,10 +74,19 @@ jobs:
           input: sarif-results/cpp.sarif
           output: sarif-results/cpp.sarif
 
+      # A private repository of a personal account has no code scanning, so its results stay with the run.
       - name: Upload the analysis
+        if: ${{ !github.event.repository.private }}
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: sarif-results/cpp.sarif
+
+      - name: Keep the analysis of a private repository
+        if: ${{ github.event.repository.private }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: CodeQL
+          path: sarif-results/cpp.sarif
 
       - name: Keep the debug build
         uses: actions/upload-artifact@v7

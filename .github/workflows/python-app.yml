@@ -181,6 +181,79 @@ jobs:
           path: build/${{ steps.app.outputs.package }}.dist
           include-hidden-files: true
 
+      # Before the signing wait, so that a package without a licence text stops the release at once.
+      - name: Write the third-party notices
+        if: ${{ inputs.version }}
+        shell: bash
+        env:
+          NOTICES: build/${{ steps.app.outputs.name }}_THIRD-PARTY-NOTICES.md
+          REPOSITORY: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          OS: ${{ matrix.osname }}
+          PACKAGE: ${{ steps.app.outputs.package }}
+        run: |
+          uv run --locked --no-dev python - <<'PY'
+          import os
+          import platform
+          import re
+          import sys
+          from importlib import metadata
+          from pathlib import Path
+
+          repository, version = os.environ["REPOSITORY"], os.environ["VERSION"]
+          name = repository.split("/")[1]
+          # Windows keeps the licence beside python.exe, the other systems in the standard library's folder.
+          python_licence = next(
+              path
+              for path in (Path(os.__file__).parent / "LICENSE.txt", Path(sys.base_prefix) / "LICENSE.txt")
+              if path.is_file()
+          )
+          components = [("Python", platform.python_version(), "PSF-2.0", "https://www.python.org/downloads/source/")]
+          texts = [(name, "LICENSE.md", Path("LICENSE.md")), ("Python", "LICENSE.txt", python_licence)]
+
+          packages = {re.sub("[-_.]+", "-", item.name).lower(): item for item in metadata.distributions()}
+          for canonical, package in sorted(packages.items()):
+              if canonical == os.environ["PACKAGE"]:
+                  continue
+              files = [
+                  file
+                  for file in package.files or []
+                  if ".dist-info/" in file.as_posix()
+                  and ("/licenses/" in file.as_posix() or re.match("licen[cs]e|copying|notice", file.name, re.I))
+              ]
+              if not files:
+                  sys.exit(f"{package.name} carries no licence text")
+              classifiers = [
+                  value.rsplit(" :: ", 1)[1]
+                  for value in package.metadata.get_all("Classifier", [])
+                  if value.startswith("License :: ")
+              ]
+              licence = package.metadata.get("License-Expression") or " / ".join(classifiers) or "see its licence text"
+              source = f"https://pypi.org/project/{canonical}/{package.version}/#files"
+              components.append((package.name, package.version, licence, source))
+              texts += [(package.name, file.name, file.locate()) for file in files]
+
+          lines = [
+              "# Third-party notices",
+              "",
+              f"{name} {version} for {os.environ['OS']} is one executable that contains the project's own code, the"
+              " Python runtime and the components below. Each component stays under its own licence; the texts that"
+              " have to accompany the executable follow the list, as their authors published them.",
+              "",
+              f"The source code of this version is at https://github.com/{repository}/tree/v{version}. Its uv.lock pins"
+              " every Python package to the version listed here, and each entry links to that version's source code.",
+              "",
+              "## Components",
+              "",
+          ]
+          for component, number, licence, source in components:
+              lines += [f"### {component}", "", f"- Version: {number}", f"- Licence: {licence}", f"- Source: {source}", ""]
+          lines += ["## Licence texts", ""]
+          for owner, filename, path in texts:
+              lines += [f"### {owner} – {filename}", "", "````text", path.read_text("utf-8", "replace").strip(), "````", ""]
+          Path(os.environ["NOTICES"]).write_text("\n".join(lines), encoding="utf-8", newline="\n")
+          PY
+
       - name: Sign the executable
         if: ${{ inputs.version && runner.os == 'Windows' }}
         uses: GrzybDev/actions/codesign@v1
@@ -195,9 +268,11 @@ jobs:
           store: ${{ vars.SIGNING_STORE || 's3://codesign' }}
           subject: ${{ vars.SIGNING_SUBJECT }}
 
-      - name: Attach the executable to the release
+      - name: Attach the executable and its notices to the release
         if: ${{ inputs.version }}
         uses: softprops/action-gh-release@v3
         with:
-          files: build/${{ steps.app.outputs.name }}${{ matrix.extension }}
+          files: |
+            build/${{ steps.app.outputs.name }}${{ matrix.extension }}
+            build/${{ steps.app.outputs.name }}_THIRD-PARTY-NOTICES.md
           tag_name: v${{ inputs.version }}

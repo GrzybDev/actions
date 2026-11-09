@@ -67,8 +67,11 @@ jobs:
           store: ${{ vars.SIGNING_STORE || 's3://codesign' }}
           subject: ${{ vars.SIGNING_SUBJECT }}
 
-      - name: Attach the library to the release
+      # A library that links nothing third-party has no notices file, which this step skips.
+      - name: Attach the library and its third-party notices to the release
         uses: softprops/action-gh-release@v3
         with:
-          files: ${{ env.OUTPUT }}/${{ inputs.library }}
+          files: |
+            ${{ env.OUTPUT }}/${{ inputs.library }}
+            THIRD-PARTY-NOTICES.md
           tag_name: v${{ inputs.version }}

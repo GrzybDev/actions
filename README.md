@@ -135,8 +135,9 @@ executable `<repository name>.Tests.exe` there. A 32-bit library passes `platfor
 `cpp-checks.yml` builds the Debug configuration, runs the tests, analyzes the code with CodeQL (leaving out what vcpkg
 built) and keeps the build, without the files named after the repository such as the tests, as the `DebugBuild`
 artifact; it reuses what vcpkg built in earlier runs. The calling workflow grants `security-events: write` for the
-analysis. `cpp-dll.yml` builds the Release configuration from scratch, runs the tests, signs the `library` with
-`codesign` and attaches it to the release `v<version>`:
+analysis, and also `actions: read` in a private repository, whose results stay in the run as the `CodeQL` artifact
+because a personal account has no code scanning for it. `cpp-dll.yml` builds the Release configuration from scratch,
+runs the tests, signs the `library` with `codesign` and attaches it to the release `v<version>`:
 
 ```yaml
 jobs:

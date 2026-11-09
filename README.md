@@ -88,6 +88,10 @@ Windows, with Nuitka or, given `builder: pyinstaller`, with PyInstaller, from th
 pins. Without a `version` it keeps debug builds as artifacts; with one it builds onefile executables, signs the Windows one with `codesign` and attaches them to the
 release `v<version>`.
 
+Each executable of a release comes with `<name>_THIRD-PARTY-NOTICES.md`, written from what was installed for that
+system: the Python runtime and every package with its version, licence and a link to its source code, then their licence
+texts and the project's `LICENSE.md`. A package without a licence text stops the build before the signing.
+
 ```yaml
 jobs:
   build:
@@ -137,7 +141,8 @@ built) and keeps the build, without the files named after the repository such as
 artifact; it reuses what vcpkg built in earlier runs. The calling workflow grants `security-events: write` for the
 analysis, and also `actions: read` in a private repository, whose results stay in the run as the `CodeQL` artifact
 because a personal account has no code scanning for it. `cpp-dll.yml` builds the Release configuration from scratch,
-runs the tests, signs the `library` with `codesign` and attaches it to the release `v<version>`:
+runs the tests, signs the `library` with `codesign` and attaches it, with the repository's `THIRD-PARTY-NOTICES.md` if
+there is one, to the release `v<version>`:
 
 ```yaml
 jobs:

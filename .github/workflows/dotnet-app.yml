@@ -1,0 +1,315 @@
+name: .NET app release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: The version to release; its installers are attached to the release v<version>.
+        type: string
+        required: true
+      ref:
+        description: The ref to build, such as the commit that bump-version gives; the triggering commit when empty.
+        type: string
+        default: ''
+      project:
+        description: The app's project, such as src/App/App.csproj; its assembly name names the executable.
+        type: string
+        required: true
+      name:
+        description: The app's name, which titles it and names its .deb; <repository name> when empty.
+        type: string
+        default: ''
+      id:
+        description: >-
+          The app's id, such as dev.example.app, which identifies it to its updates and names its install folder,
+          installers, Linux desktop entry and icons.
+        type: string
+        required: true
+      icon:
+        description: The app's .ico for the Windows installer.
+        type: string
+        required: true
+      linux-icons:
+        description: A folder of the app's PNG icons named after their size, such as 256.png, which the AppImage shows.
+        type: string
+        required: true
+      categories:
+        description: The menu categories of the Linux desktop entry, such as Office;Utility;
+        type: string
+        required: true
+      deb-depends:
+        description: The Depends field of the .deb, the packages of the system libraries that the app loads.
+        type: string
+        required: true
+      properties:
+        description: MSBuild properties to publish with, one Name=Value per line.
+        type: string
+        default: ''
+      workers:
+        description: >-
+          The projects of the app's worker processes, one <folder>=<project> per line; each is published like the app
+          into that folder of the app.
+        type: string
+        default: ''
+      artifact:
+        description: >-
+          An artifact of an earlier job whose files join the app's files, such as data that one job builds for every
+          system.
+        type: string
+        default: ''
+      upload:
+        description: >-
+          Upload the update feeds, their packages and the .deb to the release store that the RELEASE_STORE_* secrets
+          name, with delta packages from the release that it holds.
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: Build for ${{ matrix.system }}
+    runs-on: ${{ matrix.os }}
+    # The signing machine never signs a file uploaded longer ago, so the two change together.
+    timeout-minutes: 150
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            system: Windows
+            runtime: win-x64
+            channel: win
+            extension: .exe
+          - os: ubuntu-latest
+            system: Linux
+            runtime: linux-x64
+            channel: linux
+    defaults:
+      run:
+        shell: bash
+    env:
+      PROJECT: ${{ inputs.project }}
+      NAME: ${{ inputs.name || github.event.repository.name }}
+      VERSION: ${{ inputs.version }}
+      # A caller's environment does not reach a reusable workflow, so the opt-outs of the consumers' tools are set here.
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+      AVALONIA_TELEMETRY_OPTOUT: '1'
+    outputs:
+      velopack: ${{ steps.app.outputs.velopack }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Publish
+        env:
+          RUNTIME: ${{ matrix.runtime }}
+          PROPERTIES: ${{ inputs.properties }}
+          WORKERS: ${{ inputs.workers }}
+        run: |
+          options=(-c Release -r "$RUNTIME" --self-contained -p:PublishReadyToRun=true -p:RestoreLockedMode=true)
+          options+=(-p:Version="$VERSION")
+          while IFS= read -r property; do
+            if [[ -n "$property" ]]; then options+=(-p:"$property"); fi
+          done <<< "$PROPERTIES"
+          dotnet publish "$PROJECT" "${options[@]}" -o "$RUNNER_TEMP/app"
+          while IFS='=' read -r folder project; do
+            if [[ -n "$folder" ]]; then dotnet publish "$project" "${options[@]}" -o "$RUNNER_TEMP/app/$folder"; fi
+          done <<< "$WORKERS"
+
+      - name: Add the artifact's files
+        if: ${{ inputs.artifact }}
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.artifact }}
+          path: ${{ runner.temp }}/app
+
+      # vpk has to be the version of the Velopack library that the app runs.
+      - id: app
+        name: Read the app's details
+        shell: pwsh
+        run: |
+          $packages = dotnet package list --project $env:PROJECT --include-transitive --no-restore --format json |
+            ConvertFrom-Json
+          $velopack = $packages.projects.frameworks | ForEach-Object { $_.topLevelPackages; $_.transitivePackages } |
+            Where-Object id -EQ Velopack | Select-Object -First 1
+          if (-not $velopack) { throw "$env:PROJECT does not use the Velopack package." }
+          $properties = (dotnet msbuild $env:PROJECT -getProperty:AssemblyName -getProperty:Authors `
+            -getProperty:Description | ConvertFrom-Json).Properties
+          @(
+            "velopack=$($velopack.resolvedVersion)", "executable=$($properties.AssemblyName)",
+            "authors=$($properties.Authors)", "description=$($properties.Description)"
+          ) | Add-Content -LiteralPath $env:GITHUB_OUTPUT
+
+      - name: Download the latest release for the delta packages
+        if: ${{ inputs.upload }}
+        env:
+          VELOPACK: ${{ steps.app.outputs.velopack }}
+          CHANNEL: ${{ matrix.channel }}
+          VPK_BUCKET: ${{ secrets.RELEASE_STORE_BUCKET }}
+          VPK_ENDPOINT: ${{ secrets.RELEASE_STORE_ENDPOINT_URL }}
+          VPK_REGION: ${{ secrets.RELEASE_STORE_REGION }}
+          VPK_KEY_ID: ${{ secrets.RELEASE_STORE_ACCESS_KEY_ID }}
+          VPK_SECRET: ${{ secrets.RELEASE_STORE_SECRET_ACCESS_KEY }}
+        run: >
+          dotnet tool exec "vpk@$VELOPACK" --yes --
+          download s3 --channel "$CHANNEL" --outputDir "$RUNNER_TEMP/releases"
+
+      - id: codesign
+        name: Set up the signing
+        if: ${{ runner.os == 'Windows' }}
+        uses: GrzybDev/actions/codesign@v1
+        with:
+          version: ${{ inputs.version }}
+          store: ${{ vars.SIGNING_STORE || 's3://codesign' }}
+          subject: ${{ vars.SIGNING_SUBJECT }}
+
+      # Each signing command is a round on the signing machine with its own PIN, so all of the app's files go in one;
+      # the installer, which packs them, follows in a second round.
+      - name: Pack the release
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+          AWS_ENDPOINT_URL: ${{ secrets.AWS_ENDPOINT_URL }}
+          SIGN: ${{ steps.codesign.outputs.command }}
+          VELOPACK: ${{ steps.app.outputs.velopack }}
+          RUNTIME: ${{ matrix.runtime }}
+          EXECUTABLE: ${{ steps.app.outputs.executable }}${{ matrix.extension }}
+          AUTHORS: ${{ steps.app.outputs.authors }}
+          ID: ${{ inputs.id }}
+          ICON: ${{ inputs.icon }}
+          LINUX_ICONS: ${{ inputs.linux-icons }}
+          CATEGORIES: ${{ inputs.categories }}
+        run: |
+          options=(--packId "$ID" --packVersion "$VERSION" --runtime "$RUNTIME" --mainExe "$EXECUTABLE")
+          options+=(--packTitle "$NAME" --packAuthors "$AUTHORS")
+          options+=(--packDir "$RUNNER_TEMP/app" --outputDir "$RUNNER_TEMP/releases")
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            options+=(--icon "$ICON" --signTemplate "$SIGN {{file...}}" --signParallel 1000)
+          else
+            # vpk builds the AppImage's file system with mksquashfs and the delta packages with zstd.
+            sudo apt-get install -y squashfs-tools zstd
+            options+=(--icon "$LINUX_ICONS/256.png" --categories "$CATEGORIES")
+          fi
+          dotnet tool exec "vpk@$VELOPACK" --yes -- pack "${options[@]}"
+
+      # The AppImage updates itself; the .deb installs into the system, where the app only tells of a new version.
+      - name: Build the .deb
+        if: ${{ runner.os == 'Linux' }}
+        env:
+          ID: ${{ inputs.id }}
+          EXECUTABLE: ${{ steps.app.outputs.executable }}
+          AUTHORS: ${{ steps.app.outputs.authors }}
+          DESCRIPTION: ${{ steps.app.outputs.description }}
+          LINUX_ICONS: ${{ inputs.linux-icons }}
+          CATEGORIES: ${{ inputs.categories }}
+          DEPENDS: ${{ inputs.deb-depends }}
+        run: |
+          package=$(tr "[:upper:]" "[:lower:]" <<< "$NAME")
+          # Debian orders a version with ~ before the same version without it, as SemVer orders a pre-release.
+          tilde='~'
+          root="$RUNNER_TEMP/deb"
+          mkdir -p "$root/DEBIAN" "$root/opt" "$root/usr/bin" "$root/usr/share/applications"
+          cp -R "$RUNNER_TEMP/app" "$root/opt/$package"
+          ln -s "/opt/$package/$EXECUTABLE" "$root/usr/bin/$package"
+          for icon in "$LINUX_ICONS"/*.png; do
+            size=$(basename "$icon" .png)
+            mkdir -p "$root/usr/share/icons/hicolor/${size}x$size/apps"
+            cp "$icon" "$root/usr/share/icons/hicolor/${size}x$size/apps/$ID.png"
+          done
+          cat > "$root/usr/share/applications/$ID.desktop" <<EOF
+          [Desktop Entry]
+          Type=Application
+          Name=$NAME
+          Exec=/opt/$package/$EXECUTABLE
+          Icon=$ID
+          Terminal=false
+          Categories=$CATEGORIES
+          EOF
+          cat > "$root/DEBIAN/control" <<EOF
+          Package: $package
+          Version: ${VERSION/-/$tilde}
+          Architecture: amd64
+          Maintainer: $AUTHORS
+          Installed-Size: $(du -sk "$root" | cut -f1)
+          Depends: $DEPENDS
+          Section: misc
+          Priority: optional
+          Description: ${DESCRIPTION:-$NAME}
+          EOF
+          dpkg-deb --build --root-owner-group "$root" "$RUNNER_TEMP/releases/${package}_amd64.deb"
+
+      - name: Keep the release
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.system }}
+          path: ${{ runner.temp }}/releases
+
+  publish:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+
+    steps:
+      # Only global.json, so that vpk runs on the SDK that the builds used.
+      - if: ${{ inputs.upload }}
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          sparse-checkout: global.json
+          sparse-checkout-cone-mode: false
+
+      - if: ${{ inputs.upload }}
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: releases
+          merge-multiple: true
+
+      - name: Attach the installers to the release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            releases/*-win-Setup.exe
+            releases/*-win-Portable.zip
+            releases/*.AppImage
+            releases/*.deb
+          tag_name: v${{ inputs.version }}
+
+      # The .deb goes first, since the app tells of a new version as soon as the Linux feed names it.
+      - name: Upload to the release store
+        if: ${{ inputs.upload }}
+        env:
+          VELOPACK: ${{ needs.build.outputs.velopack }}
+          VPK_BUCKET: ${{ secrets.RELEASE_STORE_BUCKET }}
+          VPK_ENDPOINT: ${{ secrets.RELEASE_STORE_ENDPOINT_URL }}
+          VPK_REGION: ${{ secrets.RELEASE_STORE_REGION }}
+          VPK_KEY_ID: ${{ secrets.RELEASE_STORE_ACCESS_KEY_ID }}
+          VPK_SECRET: ${{ secrets.RELEASE_STORE_SECRET_ACCESS_KEY }}
+          # Not every S3-compatible store reads the chunked uploads that the AWS SDK's default checksums need: some
+          # keep the chunks as the file. Each package's SHA-256 in the feed still guards the downloads.
+          VPK_DISABLE_CHECKSUM_VALIDATION: 'true'
+          AWS_ENDPOINT_URL: ${{ secrets.RELEASE_STORE_ENDPOINT_URL }}
+          AWS_DEFAULT_REGION: ${{ secrets.RELEASE_STORE_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.RELEASE_STORE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.RELEASE_STORE_SECRET_ACCESS_KEY }}
+        run: |
+          for deb in releases/*.deb; do
+            aws s3api put-object --bucket "$VPK_BUCKET" --key "${deb#releases/}" --body "$deb" \
+              --content-type application/vnd.debian.binary-package > /dev/null
+          done
+          for channel in win linux; do
+            dotnet tool exec "vpk@$VELOPACK" --yes -- upload s3 --channel "$channel" --outputDir releases
+          done

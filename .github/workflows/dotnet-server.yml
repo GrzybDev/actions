@@ -1,0 +1,144 @@
+name: .NET server release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: The version to release; it tags the image, and its archives are attached to the release v<version>.
+        type: string
+        required: true
+      ref:
+        description: The ref to build, such as the commit that bump-version gives; the triggering commit when empty.
+        type: string
+        default: ''
+      project:
+        description: The server's project, such as src/Server/Server.csproj, which sets the image's properties.
+        type: string
+        required: true
+      image:
+        description: >-
+          The image's repository in the registry, such as owner/server, in lower case; its last part names the
+          archives.
+        type: string
+        required: true
+      registry:
+        description: The container registry, which the workflow signs in to with GITHUB_TOKEN.
+        type: string
+        default: ghcr.io
+      runtimes:
+        description: The Linux runtimes to pack an archive for, separated by spaces; the image is for linux-x64.
+        type: string
+        default: linux-x64
+      artifact:
+        description: An artifact of an earlier job whose files join the server's files in the image and the archives.
+        type: string
+        default: ''
+      upload:
+        description: >-
+          Upload the archives to the release store that the RELEASE_STORE_* secrets name, under server/<version>/.
+        type: boolean
+        default: false
+
+env:
+  PROJECT: ${{ inputs.project }}
+  VERSION: ${{ inputs.version }}
+  IMAGE: ${{ inputs.image }}
+  # A caller's environment does not reach a reusable workflow, so the opt-outs of the consumers' tools are set here.
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
+
+jobs:
+  image:
+    name: Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      # The image takes every file of the folder that the server is published to.
+      - name: Add the artifact's files
+        if: ${{ inputs.artifact }}
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.artifact }}
+          path: ${{ runner.temp }}/server
+
+      # A pre-release gets only its own tag, so that X.Y, X and latest keep naming releases.
+      - name: Publish the image
+        env:
+          REGISTRY: ${{ inputs.registry }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          docker login "$REGISTRY" --username "$GITHUB_ACTOR" --password-stdin <<< "$GITHUB_TOKEN"
+          tags=$VERSION
+          if [[ "$VERSION" != *-* ]]; then tags="$tags;${VERSION%.*};${VERSION%%.*};latest"; fi
+          dotnet publish "$PROJECT" -c Release -r linux-x64 -t:PublishContainer -p:RestoreLockedMode=true \
+            -p:Version="$VERSION" -p:ContainerRegistry="$REGISTRY" -p:ContainerRepository="$IMAGE" \
+            -p:ContainerImageTags="\"$tags\"" -o "$RUNNER_TEMP/server"
+
+  archives:
+    name: Archives
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Download the artifact's files
+        if: ${{ inputs.artifact }}
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.artifact }}
+          path: ${{ runner.temp }}/artifact
+
+      # Each archive holds one folder named after it. Unpacking as root keeps the files' owner, so root owns them
+      # instead of the runner's user id, which may name anyone on the server.
+      - name: Pack the archives
+        env:
+          RUNTIMES: ${{ inputs.runtimes }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/archives"
+          for runtime in $RUNTIMES; do
+            name=${IMAGE##*/}-$VERSION-$runtime
+            dotnet publish "$PROJECT" -c Release -r "$runtime" --self-contained -p:PublishSingleFile=true \
+              -p:IncludeNativeLibrariesForSelfExtract=true -p:PublishReadyToRun=true -p:RestoreLockedMode=true \
+              -p:Version="$VERSION" -o "$RUNNER_TEMP/$name"
+            if [[ -d "$RUNNER_TEMP/artifact" ]]; then cp -R "$RUNNER_TEMP/artifact/." "$RUNNER_TEMP/$name"; fi
+            tar -czf "$RUNNER_TEMP/archives/$name.tar.gz" --owner=0 --group=0 --numeric-owner -C "$RUNNER_TEMP" "$name"
+          done
+
+      - name: Attach the archives to the release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ runner.temp }}/archives/*.tar.gz
+          tag_name: v${{ inputs.version }}
+
+      - name: Upload to the release store
+        if: ${{ inputs.upload }}
+        env:
+          BUCKET: ${{ secrets.RELEASE_STORE_BUCKET }}
+          AWS_ENDPOINT_URL: ${{ secrets.RELEASE_STORE_ENDPOINT_URL }}
+          AWS_DEFAULT_REGION: ${{ secrets.RELEASE_STORE_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.RELEASE_STORE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.RELEASE_STORE_SECRET_ACCESS_KEY }}
+        run: |
+          for archive in "$RUNNER_TEMP"/archives/*.tar.gz; do
+            aws s3api put-object --bucket "$BUCKET" --key "server/$VERSION/${archive##*/}" --body "$archive" \
+              --content-type application/gzip > /dev/null
+          done

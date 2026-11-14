@@ -197,6 +197,100 @@ jobs:
       license-overrides: license-overrides.json
 ```
 
+## .NET app releases
+
+A reusable workflow releases a .NET desktop app for 64-bit Windows and Linux with [Velopack](https://velopack.io), with
+the vpk that matches the Velopack package of the app. It publishes the `project` self-contained and ReadyToRun, in
+locked mode like the .NET checks, which needs `win-x64` and `linux-x64` in the project's `RuntimeIdentifiers`. The
+`properties` are MSBuild properties, one `Name=Value` per line. Each line of `workers`, `<folder>=<project>`, publishes
+a worker process the same way into that folder of the app, and the files of `artifact`, which an earlier job of the
+run uploaded, join the app's files.
+
+For Windows, vpk packs an installer, a portable zip and the update packages, and `codesign` signs every PE file
+that is not signed yet, satellite assemblies and native libraries included: all of the app's files in one round and the
+installer in a second, so a release asks for the PIN twice. For Linux, vpk packs an AppImage and the update packages,
+and a `.deb` installs the app into `/opt/<lowercase name>` with the command `<lowercase name>`, and a desktop entry and
+the `linux-icons` named after the app's `id`.
+
+The `id` identifies the app to its updates and names its install folder, `%LOCALAPPDATA%\<id>` on Windows, which an
+uninstall removes whole, so the app keeps its own data in a folder of another name. It also names the installers, as
+vpk makes them and its upload expects them: `<id>-win-Setup.exe`, `<id>-win-Portable.zip` and `<id>.AppImage`. The
+`.deb` is `<lowercase name>_amd64.deb`, where `<name>` is `name`, the repository's name unless given, which also titles
+the app. The installers keep their names from one release to the next and are attached to the release `v<version>`.
+
+Given `upload: true`, the builds first download the latest release from the release store, so that vpk adds delta
+packages, and the workflow then uploads the `.deb` and the `win` and `linux` update feeds with their packages through
+the S3 API. The store comes from the Actions secrets `RELEASE_STORE_ENDPOINT_URL`, `RELEASE_STORE_REGION`,
+`RELEASE_STORE_BUCKET`, `RELEASE_STORE_ACCESS_KEY_ID` and `RELEASE_STORE_SECRET_ACCESS_KEY`, whose key needs to list,
+read and write files in the bucket. The app reads the feeds over HTTPS from the bucket's public address, which it can
+take as a build property from an Actions variable:
+
+```yaml
+jobs:
+  checks:
+    uses: GrzybDev/actions/.github/workflows/dotnet-checks.yml@v1
+
+  version:
+    # bump-version, as above
+
+  release:
+    needs: [checks, version]
+    permissions:
+      contents: write
+    uses: GrzybDev/actions/.github/workflows/dotnet-app.yml@v1
+    secrets: inherit
+    with:
+      version: ${{ needs.version.outputs.version }}
+      ref: ${{ needs.version.outputs.ref }}
+      project: src/App/App.csproj
+      id: dev.example.app
+      icon: assets/app.ico
+      linux-icons: assets/linux
+      categories: Office;
+      deb-depends: libc6 (>= 2.33), libicu74 | libicu72, libfontconfig1
+      properties: UpdateFeedUrl=${{ vars.UPDATE_FEED_URL }}
+      upload: true
+```
+
+## .NET server releases
+
+A reusable workflow releases a .NET server for Linux as a container image and as archives. It publishes the `project`
+in locked mode like the .NET checks, which needs `linux-x64` and every runtime of `runtimes` in the project's
+`RuntimeIdentifiers`, and the files of `artifact`, which an earlier job of the run uploaded, join the server's files in
+the image and in each archive.
+
+The .NET SDK builds the image for `linux-x64` without a Dockerfile (`PublishContainer`), so the project sets its base
+image, port, user and environment with the SDK's container properties. The image goes to `registry`, `ghcr.io` unless
+given, as the repository `image`, such as `owner/server` in lower case, signed in with `GITHUB_TOKEN`, and is tagged
+with the version and, unless it is a pre-release, with `X.Y`, `X` and `latest`. A new package on GitHub's registry
+starts private.
+
+Each runtime of `runtimes`, separated by spaces and `linux-x64` unless given, gets an archive
+`<name>-<version>-<runtime>.tar.gz`, where `<name>` is the last part of `image`. It holds one folder of the same name,
+owned by root: the server published self-contained and ReadyToRun as a single file, and the rest of the project's
+publish output, such as a systemd unit that the project adds to it. The single file unpacks its native libraries when it
+starts, into `DOTNET_BUNDLE_EXTRACT_BASE_DIR` or the home folder of the user that runs it. The archives are attached to
+the release `v<version>`, and given `upload: true`, also uploaded under `server/<version>/` to the release store that
+the `RELEASE_STORE_*` secrets name, as for the app releases. The calling job grants `packages: write` for the image and
+`contents: write` for the release:
+
+```yaml
+jobs:
+  server:
+    needs: [checks, version]
+    permissions:
+      contents: write
+      packages: write
+    uses: GrzybDev/actions/.github/workflows/dotnet-server.yml@v1
+    secrets: inherit
+    with:
+      version: ${{ needs.version.outputs.version }}
+      ref: ${{ needs.version.outputs.ref }}
+      project: src/Server/Server.csproj
+      image: example/server
+      upload: true
+```
+
 ## Development
 
 The codesign scripts have Pester 5 tests, which CI runs as well:
